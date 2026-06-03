@@ -14,6 +14,8 @@
     "create-admin": "node scripts/create-admin.js",
     "qa:smoke": "node scripts/qa-smoke.js",
     "verify:multi-store": "node scripts/verify-multi-store.js",
+    "harden:production": "node scripts/harden-production.js",
+    "security:verify": "node scripts/security-verify.js",
     "rotate-secrets": "node scripts/rotate-secrets.js"
   },
   "dependencies": {

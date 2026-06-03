@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
-import { getAuth, authFetch, clearAuth } from '@/lib/auth';
+import { getAuth, authFetch, clearAuth, logout } from '@/lib/auth';
 import { useRealtimeRecovery } from '@/lib/realtimeRecovery';
 import { pushSupported, getSubscriptionState, subscribe as pushSubscribe, unsubscribe as pushUnsubscribe, sendTest as pushSendTest } from '@/lib/push';
 
@@ -122,8 +122,8 @@ export default function KitchenPage() {
     }
   }
 
-  function logout() {
-    clearAuth();
+  async function handleLogout() {
+    await logout();
     router.replace('/login');
   }
 
@@ -182,7 +182,7 @@ export default function KitchenPage() {
               ทดสอบ
             </button>
           )}
-          <button onClick={logout}
+          <button onClick={handleLogout}
                   style={{ background: 'rgba(239,71,111,.15)', color: '#ef476f',
                            border: '1px solid rgba(239,71,111,.25)', padding: '7px 14px',
                            borderRadius: 20, fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>

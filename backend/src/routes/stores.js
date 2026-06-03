@@ -5,6 +5,7 @@ const path = require('path');
 const db = require('../db');
 const { authRequired, requireRole } = require('../middleware/auth');
 const { parseStoreIds, resolveStoreId } = require('../lib/storeScope');
+const { writeAudit } = require('../lib/auditLog');
 
 const router = express.Router();
 const UPLOAD_DIR = path.join(__dirname, '..', '..', 'uploads', 'products');
@@ -257,6 +258,7 @@ router.post('/', authRequired, requireRole('admin'), async (req, res) => {
       );
     }
     await client.query('COMMIT');
+    await writeAudit(req, { action: 'store.create', targetType: 'store', targetId: rows[0].id, details: { code: rows[0].code } });
     res.status(201).json(rows[0]);
   } catch (e) {
     await client.query('ROLLBACK');
@@ -292,6 +294,7 @@ router.put('/:id', authRequired, requireRole('admin'), async (req, res) => {
      input.public_base_url, input.timezone, input.is_active, storeId]
   );
   if (!rows[0]) return res.status(404).json({ error: 'store not found' });
+  await writeAudit(req, { action: 'store.update', targetType: 'store', targetId: storeId, details: input });
   res.json(rows[0]);
 });
 
@@ -376,6 +379,7 @@ router.delete('/:id', authRequired, requireRole('admin'), async (req, res) => {
 
     await client.query('COMMIT');
     productImages.forEach(unlinkLocalProductImage);
+    await writeAudit(req, { action: 'store.delete', targetType: 'store', targetId: store.id, details: { name: store.name } });
     res.json({ deleted: true, id: store.id, name: store.name });
   } catch (e) {
     await client.query('ROLLBACK');

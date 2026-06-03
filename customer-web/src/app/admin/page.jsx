@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import {
   getAuth,
   authFetch,
-  clearAuth,
+  logout,
   getActiveStoreId,
   setActiveStoreId as persistActiveStoreId,
   activeStoreHeaders,
@@ -103,12 +103,12 @@ export default function AdminPage() {
     if (!a) { router.replace('/login?next=/admin'); return; }
     if (a.user.role === 'kitchen') { router.replace('/kitchen'); return; }
     if (a.user.role === 'staff') { router.replace('/staff'); return; }
-    if (!['admin', 'super_admin'].includes(a.user.role)) { clearAuth(); router.replace('/login?next=/admin'); return; }
+    if (!['admin', 'super_admin'].includes(a.user.role)) { void logout().then(() => router.replace('/login?next=/admin')); return; }
     setActiveStoreIdState(getActiveStoreId(a.user?.store_id || 1));
     setAuthState(a);
   }, [router]);
 
-  function logout() { clearAuth(); router.replace('/login'); }
+  async function handleLogout() { await logout(); router.replace('/login'); }
 
   if (!auth) return null;
   const isAdmin = auth.user.role === 'admin' || auth.user.role === 'super_admin';
@@ -139,7 +139,7 @@ export default function AdminPage() {
               onChange={changeActiveStore}
             />
           )}
-          <button onClick={logout} style={{ ...navLinkStyle, background: 'rgba(239,71,111,.15)', color: '#ef476f', borderColor: 'rgba(239,71,111,.25)', border: '1px solid', cursor: 'pointer' }}>🚪 ออก</button>
+          <button onClick={handleLogout} style={{ ...navLinkStyle, background: 'rgba(239,71,111,.15)', color: '#ef476f', borderColor: 'rgba(239,71,111,.25)', border: '1px solid', cursor: 'pointer' }}>🚪 ออก</button>
         </div>
       </header>
 

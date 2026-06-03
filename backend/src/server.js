@@ -96,6 +96,7 @@ app.use('/uploads', express.static(path.join(__dirname, '..', 'uploads'), {
 
 // Targeted limits on sensitive endpoints — must come BEFORE the route handler.
 app.use('/api/auth/login', loginLimiter);
+app.use('/api/auth/refresh', loginLimiter);
 app.post('/api/public/orders', publicOrderLimiter);
 app.use('/api', apiLimiter);
 

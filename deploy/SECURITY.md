@@ -116,18 +116,22 @@ NODE_ENV=production node scripts/create-admin.js admin "<strong-password-≥10>"
 
 ## Phase B — สัปดาห์แรกหลัง launch (Important)
 
-### B1. Account lockout
-ตอนนี้มีแต่ rate limit ระดับ IP — ถ้าใครพยายามจาก IP คนเยอะ (เช่น CGNAT) อาจกระทบ user จริง
-แก้: เพิ่ม table `login_attempts` + lock username หลัง fail 5 ครั้งใน 15 นาที
+### B1. Account lockout ✅
+- ตาราง `login_attempts` — ล็อก username หลัง fail 5 ครั้ง / 15 นาที (`LOGIN_MAX_ATTEMPTS`, `LOGIN_LOCK_MINUTES`)
 
-### B2. Refresh token
-JWT 2 ชั่วโมงดีขึ้นจาก 12 แต่ยัง revoke ไม่ได้ — เพิ่ม:
-- `refresh_tokens` table (เก็บ random opaque token + user_id + expires)
-- `POST /api/auth/refresh` คืน access token ใหม่
-- `POST /api/auth/logout` ลบ refresh token
+### B2. Refresh token ✅
+- ตาราง `refresh_tokens` + `POST /api/auth/refresh` + `POST /api/auth/logout`
+- Web/mobile เก็บ `refresh_token` และ refresh อัตโนมัติเมื่อ JWT หมดอายุ
 
-### B3. Audit log
-เพิ่ม table `audit_log` (user_id, action, target, ts, ip) — เก็บทุก mutation จาก admin/staff
+### B3. Audit log ✅ (admin control)
+- ตาราง `audit_log` — บันทึก create/update/delete ร้านและผู้ใช้
+- ขยาย hook ใน routes อื่นได้ตามต้องการ
+
+```bash
+cd backend && npm run harden:production   # env + ลบ staff1/kitchen
+cd backend && node scripts/migrate.js
+cd backend && npm run security:verify
+```
 
 ### B4. ลบ default `admin/admin123` ที่ค้างใน DB จาก dev
 ```bash

@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
-import { getAuth, authFetch, clearAuth } from '@/lib/auth';
+import { getAuth, authFetch, clearAuth, logout } from '@/lib/auth';
 import { apiBase } from '@/lib/api';
 import { useRealtimeRecovery } from '@/lib/realtimeRecovery';
 import { ensureSocketConnected } from '@/lib/socket';
@@ -370,8 +370,8 @@ export default function StaffPage() {
     } catch (e) { setError(`พิมพ์ไม่สำเร็จ: ${e.message}`); }
   }
 
-  function logout() {
-    clearAuth();
+  async function handleLogout() {
+    await logout();
     router.replace('/login');
   }
 
@@ -392,7 +392,7 @@ export default function StaffPage() {
           <div style={{ opacity: .55, fontSize: 12 }}>{auth.user.full_name}</div>
         </div>
         <div className="staff-topbar-actions" style={{ display: 'flex', gap: 8 }}>
-          <button onClick={logout}
+          <button onClick={handleLogout}
                   style={{ background: 'rgba(239,71,111,.15)', color: '#ef476f',
                            border: '1px solid rgba(239,71,111,.25)', padding: '7px 14px',
                            borderRadius: 20, fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>

@@ -25,6 +25,42 @@ export function clearAuth() {
   if (typeof window !== 'undefined') storageRemove(STORE_KEY);
 }
 
+export async function logout() {
+  const auth = getAuth();
+  if (auth?.refresh_token) {
+    try {
+      await fetch(`${apiBase}/api/auth/logout`, {
+        method: 'POST',
+        cache: 'no-store',
+        credentials: apiBase ? 'omit' : 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refresh_token: auth.refresh_token }),
+      });
+    } catch { /* ignore */ }
+  }
+  clearAuth();
+}
+
+async function tryRefreshSession() {
+  const auth = getAuth();
+  if (!auth?.refresh_token) return false;
+  const res = await fetch(`${apiBase}/api/auth/refresh`, {
+    method: 'POST',
+    cache: 'no-store',
+    credentials: apiBase ? 'omit' : 'same-origin',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      refresh_token: auth.refresh_token,
+      store_id: getActiveStoreId(auth.user?.store_id),
+    }),
+  });
+  if (!res.ok) return false;
+  const data = await res.json();
+  setAuth(data);
+  setActiveStoreId(data.user?.store_id || 1);
+  return true;
+}
+
 export function getActiveStoreId(fallback = 1) {
   if (typeof window === 'undefined') return fallback || 1;
   const raw = storageGet(STORE_KEY);
@@ -109,12 +145,12 @@ export async function ensureStaffAuth() {
   return data;
 }
 
-export async function authFetch(path, opts = {}) {
+async function authFetchOnce(path, opts = {}) {
   const auth = getAuth();
   if (!auth) throw new Error('not logged in');
   const isFormData = typeof FormData !== 'undefined' && opts.body instanceof FormData;
   const hasBody = opts.body != null;
-  const res = await fetch(`${apiBase}${path}`, {
+  return fetch(`${apiBase}${path}`, {
     cache: 'no-store',
     credentials: apiBase ? 'omit' : 'same-origin',
     ...opts,
@@ -125,6 +161,13 @@ export async function authFetch(path, opts = {}) {
       ...(opts.headers || {}),
     },
   });
+}
+
+export async function authFetch(path, opts = {}) {
+  let res = await authFetchOnce(path, opts);
+  if (res.status === 401 && (await tryRefreshSession())) {
+    res = await authFetchOnce(path, opts);
+  }
   if (res.status === 401) {
     clearAuth();
     throw new Error('session expired');

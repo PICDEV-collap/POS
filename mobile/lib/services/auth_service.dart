@@ -60,10 +60,12 @@ class AuthUser {
 
 class AuthService extends ChangeNotifier {
   static const _kToken = 'pos_token';
+  static const _kRefresh = 'pos_refresh_token';
   static const _kUser = 'pos_user';
   static const _kActiveStore = 'pos_active_store_id';
 
   String? _token;
+  String? _refreshToken;
   AuthUser? _user;
   int? _activeStoreId;
 
@@ -79,12 +81,14 @@ class AuthService extends ChangeNotifier {
       _user = null;
       _activeStoreId = null;
       await p.remove(_kToken);
+      await p.remove(_kRefresh);
       await p.remove(_kUser);
       await p.remove(_kActiveStore);
       notifyListeners();
       return;
     }
     _token = p.getString(_kToken);
+    _refreshToken = p.getString(_kRefresh);
     _activeStoreId = p.getInt(_kActiveStore);
     final raw = p.getString(_kUser);
     if (raw != null) {
@@ -224,23 +228,53 @@ class AuthService extends ChangeNotifier {
 
   Future<void> _applyAuthResponse(Map<String, dynamic> body) async {
     _token = body['token'] as String;
+    _refreshToken = body['refresh_token'] as String?;
     _user = AuthUser.fromJson(body['user'] as Map<String, dynamic>);
     _activeStoreId = _validActiveStore(_user!.storeId);
     final p = await SharedPreferences.getInstance();
     await p.setString(_kToken, _token!);
+    if (_refreshToken != null) {
+      await p.setString(_kRefresh, _refreshToken!);
+    } else {
+      await p.remove(_kRefresh);
+    }
     await p.setString(_kUser, jsonEncode(_user!.toJson()));
     await p.setInt(_kActiveStore, _activeStoreId!);
     notifyListeners();
   }
 
+  Future<bool> refreshSession() async {
+    if (_refreshToken == null || _refreshToken!.isEmpty) return false;
+    try {
+      final body = await _postAuth(
+        '/api/auth/refresh',
+        body: {
+          'refresh_token': _refreshToken,
+          if (_activeStoreId != null) 'store_id': _activeStoreId,
+        },
+      );
+      await _applyAuthResponse(body);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
   Future<void> logout() async {
+    final refresh = _refreshToken;
     _token = null;
+    _refreshToken = null;
     _user = null;
     _activeStoreId = null;
     final p = await SharedPreferences.getInstance();
     await p.remove(_kToken);
+    await p.remove(_kRefresh);
     await p.remove(_kUser);
     await p.remove(_kActiveStore);
     notifyListeners();
+    if (refresh == null || refresh.isEmpty) return;
+    try {
+      await _postAuth('/api/auth/logout', body: {'refresh_token': refresh});
+    } catch (_) {}
   }
 }

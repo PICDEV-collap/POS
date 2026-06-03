@@ -3,6 +3,7 @@ const bcrypt = require('bcrypt');
 const db = require('../db');
 const { authRequired, requireRole } = require('../middleware/auth');
 const { parseStoreIds } = require('../lib/storeScope');
+const { writeAudit } = require('../lib/auditLog');
 
 const router = express.Router();
 
@@ -161,6 +162,7 @@ router.post('/', authRequired, requireRole('admin'), async (req, res) => {
                  store_id, allowed_store_ids, permissions`,
       [username, hash, fullName, role, storeId, allowedStoreIds, JSON.stringify(permissions), isActive]
     );
+    await writeAudit(req, { action: 'user.create', targetType: 'user', targetId: rows[0].id, details: { username, role } });
     res.status(201).json(publicUser(rows[0]));
   } catch (e) {
     if (e.code === '23505') return res.status(409).json({ error: 'username already exists' });
@@ -228,6 +230,12 @@ router.put('/:id', authRequired, requireRole('admin'), async (req, res) => {
                   store_id, allowed_store_ids, permissions`,
       [username, hash, fullName, role, storeId, allowedStoreIds, JSON.stringify(permissions), isActive, id]
     );
+    await writeAudit(req, {
+      action: 'user.update',
+      targetType: 'user',
+      targetId: id,
+      details: { username, role, is_active: isActive, password_changed: !!hash },
+    });
     res.json(publicUser(rows[0]));
   } catch (e) {
     if (e.code === '23505') return res.status(409).json({ error: 'username already exists' });

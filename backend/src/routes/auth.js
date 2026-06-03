@@ -3,6 +3,13 @@ const bcrypt = require('bcrypt');
 const db = require('../db');
 const { signToken, authRequired } = require('../middleware/auth');
 const { parseStoreIds } = require('../lib/storeScope');
+const { clientIp } = require('../lib/accessBoundary');
+const { assertNotLocked, recordFailure, clearAttempts } = require('../lib/loginGuard');
+const {
+  issueRefreshToken,
+  consumeRefreshToken,
+  revokeRefreshToken,
+} = require('../lib/refreshTokens');
 
 const router = express.Router();
 
@@ -23,6 +30,54 @@ async function activeStore(id) {
   return rows[0] || null;
 }
 
+async function loadUserById(id) {
+  const { rows } = await db.query(
+    `SELECT id, username, password_hash, full_name, role, is_active,
+            COALESCE(store_id, 1) AS store_id,
+            COALESCE(allowed_store_ids, ARRAY[COALESCE(store_id, 1)]::int[]) AS allowed_store_ids,
+            COALESCE(permissions, '[]'::jsonb) AS permissions
+       FROM users
+      WHERE id = $1`,
+    [id]
+  );
+  return rows[0] || null;
+}
+
+function applyStoreScope(user, requestedStoreId) {
+  if (!requestedStoreId) return user;
+  const allowedStoreIds = parseStoreIds(user.allowed_store_ids);
+  const canUseStore =
+    user.role === 'super_admin' || allowedStoreIds.includes(requestedStoreId);
+  if (!canUseStore) {
+    const err = new Error('selected store is not allowed for this user');
+    err.status = 403;
+    throw err;
+  }
+  return { ...user, store_id: requestedStoreId };
+}
+
+async function authPayload(sessionUser, req) {
+  const token = signToken(sessionUser);
+  const refresh = await issueRefreshToken(sessionUser.id, {
+    ip: clientIp(req),
+    userAgent: req.headers['user-agent'],
+  });
+  return {
+    token,
+    refresh_token: refresh.token,
+    refresh_expires_at: refresh.expires_at,
+    user: {
+      id: sessionUser.id,
+      username: sessionUser.username,
+      full_name: sessionUser.full_name,
+      role: sessionUser.role,
+      store_id: sessionUser.store_id,
+      allowed_store_ids: sessionUser.allowed_store_ids,
+      permissions: sessionUser.permissions,
+    },
+  };
+}
+
 router.get('/stores', async (_req, res) => {
   const { rows } = await db.query(
     `SELECT id, code, slug, name, logo, currency, public_base_url, timezone, is_active
@@ -36,9 +91,17 @@ router.get('/stores', async (_req, res) => {
 router.post('/login', async (req, res) => {
   const { username, password } = req.body || {};
   const requestedStoreId = selectedStoreId(req.body?.store_id);
-  if (!username || !password) {
+  const normalizedUser = String(username || '').trim();
+  if (!normalizedUser || !password) {
     return res.status(400).json({ error: 'username and password required' });
   }
+
+  try {
+    await assertNotLocked(normalizedUser);
+  } catch (e) {
+    return res.status(e.status || 429).json({ error: e.message });
+  }
+
   const { rows } = await db.query(
     `SELECT id, username, password_hash, full_name, role, is_active,
             COALESCE(store_id, 1) AS store_id,
@@ -46,41 +109,64 @@ router.post('/login', async (req, res) => {
             COALESCE(permissions, '[]'::jsonb) AS permissions
        FROM users
       WHERE username = $1`,
-    [username]
+    [normalizedUser]
   );
   const user = rows[0];
   if (!user || !user.is_active) {
+    await recordFailure(normalizedUser);
     return res.status(401).json({ error: 'invalid credentials' });
   }
   const ok = await bcrypt.compare(password, user.password_hash);
-  if (!ok) return res.status(401).json({ error: 'invalid credentials' });
-
-  let sessionUser = user;
-  if (requestedStoreId) {
-    const store = await activeStore(requestedStoreId);
-    if (!store) return res.status(403).json({ error: 'selected store not available' });
-    const allowedStoreIds = parseStoreIds(user.allowed_store_ids);
-    const canUseStore =
-      user.role === 'super_admin' || allowedStoreIds.includes(requestedStoreId);
-    if (!canUseStore) {
-      return res.status(403).json({ error: 'selected store is not allowed for this user' });
+  if (!ok) {
+    const attempt = await recordFailure(normalizedUser);
+    if (attempt.locked_until) {
+      return res.status(429).json({ error: 'บัญชีถูกล็อกชั่วคราว ลองใหม่ภายหลัง' });
     }
-    sessionUser = { ...user, store_id: requestedStoreId };
+    return res.status(401).json({ error: 'invalid credentials' });
   }
 
-  const token = signToken(sessionUser);
-  return res.json({
-    token,
-    user: {
-      id: sessionUser.id,
-      username: sessionUser.username,
-      full_name: sessionUser.full_name,
-      role: sessionUser.role,
-      store_id: sessionUser.store_id,
-      allowed_store_ids: sessionUser.allowed_store_ids,
-      permissions: sessionUser.permissions,
-    },
-  });
+  await clearAttempts(normalizedUser);
+
+  try {
+    if (requestedStoreId) {
+      const store = await activeStore(requestedStoreId);
+      if (!store) return res.status(403).json({ error: 'selected store not available' });
+    }
+    const sessionUser = applyStoreScope(user, requestedStoreId);
+    return res.json(await authPayload(sessionUser, req));
+  } catch (e) {
+    return res.status(e.status || 500).json({ error: e.message });
+  }
+});
+
+router.post('/refresh', async (req, res) => {
+  const raw = req.body?.refresh_token;
+  if (!raw) return res.status(400).json({ error: 'refresh_token required' });
+  const consumed = await consumeRefreshToken(raw);
+  if (!consumed) return res.status(401).json({ error: 'invalid refresh token' });
+
+  const user = await loadUserById(consumed.userId);
+  if (!user || !user.is_active) {
+    return res.status(401).json({ error: 'invalid refresh token' });
+  }
+
+  const requestedStoreId = selectedStoreId(req.body?.store_id);
+  try {
+    if (requestedStoreId) {
+      const store = await activeStore(requestedStoreId);
+      if (!store) return res.status(403).json({ error: 'selected store not available' });
+    }
+    const sessionUser = applyStoreScope(user, requestedStoreId);
+    return res.json(await authPayload(sessionUser, req));
+  } catch (e) {
+    return res.status(e.status || 500).json({ error: e.message });
+  }
+});
+
+router.post('/logout', async (req, res) => {
+  const raw = req.body?.refresh_token;
+  if (raw) await revokeRefreshToken(raw);
+  return res.json({ ok: true });
 });
 
 router.post('/staff-session', async (req, res) => {
@@ -123,9 +209,8 @@ router.post('/staff-session', async (req, res) => {
     allowed_store_ids: staff.allowed_store_ids,
     permissions: staff.permissions,
   };
-  const token = signToken(user);
   console.log(`[auth] staff auto-session issued user=${user.username} ip=${req.ip}`);
-  return res.json({ token, user });
+  return res.json(await authPayload(user, req));
 });
 
 router.get('/me', authRequired, async (req, res) => {

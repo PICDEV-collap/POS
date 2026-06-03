@@ -62,6 +62,9 @@ class ApiService {
         streamed,
       ).timeout(requestTimeout);
       if (res.statusCode == 401) {
+        if (await auth.refreshSession()) {
+          return _sendOnce(method, path, body);
+        }
         await auth.logout();
         throw ApiException(401, 'session expired');
       }
