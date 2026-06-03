@@ -1,5 +1,7 @@
 # POS V2 — Docker Deployment
 
+> **ใช้ ngrok + WinSW อยู่แล้ว?** ไม่ต้องใช้ Docker — ดู [`../ngrok.md`](../ngrok.md) และ `restart-services.bat`
+
 รัน POS V2 แบบ container สำหรับ lab, สาขาใหม่, หรือ cloud ผ่าน **Caddy** (HTTP `:8080` + HTTPS `:443` เมื่อตั้งโดเมน)
 
 ## สถาปัตยกรรม

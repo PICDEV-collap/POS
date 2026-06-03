@@ -55,7 +55,28 @@ function isLocalHostName(value) {
     || isPrivateLanIp(host);
 }
 
+function trustedTunnelHosts() {
+  return String(process.env.ADMIN_CONTROL_TUNNEL_HOSTS || '')
+    .split(',')
+    .map((h) => hostName(h))
+    .filter(Boolean);
+}
+
+function requestHost(req) {
+  return hostName(firstHeaderValue(req.headers['x-forwarded-host']))
+    || hostName(firstHeaderValue(req.headers.host));
+}
+
+function isTrustedTunnelRequest(req) {
+  const allowed = trustedTunnelHosts();
+  if (!allowed.length) return false;
+  const host = requestHost(req);
+  if (!host) return false;
+  return allowed.some((entry) => host === entry || host.endsWith(`.${entry}`));
+}
+
 function isLocalControlRequest(req) {
+  if (isTrustedTunnelRequest(req)) return true;
   const ip = clientIp(req);
   const forwardedHost = firstHeaderValue(req.headers['x-forwarded-host']);
   const origin = firstHeaderValue(req.headers.origin);
@@ -189,7 +210,9 @@ module.exports = {
   isMobileStoreAdminAllowedControlPath,
   isAdminControlPath,
   isLocalControlRequest,
+  isTrustedTunnelRequest,
   isLocalHostName,
   isLoopbackIp,
   isPrivateLanIp,
+  trustedTunnelHosts,
 };

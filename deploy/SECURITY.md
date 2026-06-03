@@ -41,7 +41,21 @@
 - CORS allowlist จาก `CORS_ORIGINS`
 - Body limit 1 MB, อัปโหลดรูปจำกัด MIME/ขนาด
 
-### Docker (ถ้าใช้ `docker compose`)
+### ngrok (tunnel แทน public IP)
+
+เมื่อใช้ `restart-services.bat` + ngrok → browser เห็น **origin เดียว** (`https://xxx.ngrok-free.app`)
+
+| หัวข้อ | แนวทาง |
+|--------|--------|
+| API | `NEXT_PUBLIC_API_BASE=` ว่าง — Next.js proxy `/api/*` ไป backend |
+| QR ลูกค้า | `PUBLIC_BASE_URL=https://<static-ngrok-domain>` |
+| Admin แก้เมนูผ่าน ngrok | ตั้ง `ADMIN_CONTROL_TUNNEL_HOSTS=<static-ngrok-domain>` หรือเข้าแอดมินผ่าน LAN IP |
+| Staff / ครัว | ใช้ URL ngrok ได้ตามปกติ (ไม่โดน LAN guard บน path ปฏิบัติการ) |
+| CORS | ไม่ต้องเพิ่ม ngrok ใน `CORS_ORIGINS` เมื่อ same-origin |
+
+รายละเอียด: [`ngrok.md`](ngrok.md)
+
+### Docker (ถ้าใช้ `docker compose` — ไม่จำเป็นถ้าใช้ ngrok อยู่แล้ว)
 
 - Postgres และ backend **ไม่** map พอร์ตออก host ใน compose มาตรฐาน
 - เข้าระบบผ่าน **Caddy** (พอร์ต 80/443) — ส่ง `X-Forwarded-For` ให้ LAN guard ทำงาน; ตั้ง `CADDY_DOMAIN` สำหรับ TLS อัตโนมัติ

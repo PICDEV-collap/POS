@@ -154,5 +154,58 @@ nssm start ngrok-pos
 | Push notifications HTTPS dev | ✅ ดีกว่า | LAN: ใช้ `tls internal` ได้ |
 | WebSocket ตรง | บางครั้ง flaky | ✅ มั่นคง |
 
-**ผมแนะนำ:** ใช้ **Caddy ใน production** + **ngrok สำหรับ demo/dev** ก็ได้ทั้งคู่
-หรือ **ngrok อย่างเดียว** ถ้าร้านไม่มี public IP / ไม่อยาก deal กับ DNS / firewall
+**แนะนำสำหรับร้านที่ใช้ ngrok อยู่แล้ว (เช่น WinSW + `restart-services.bat`):**
+
+- **ไม่ต้อง** ใช้ Docker/Caddy เว้นแต่จะย้าย infra
+- ใช้ **static domain ฟรี** 1 อันของ ngrok → QR ไม่หลุดทุกครั้ง restart
+- ตั้ง `PUBLIC_BASE_URL` + `ADMIN_CONTROL_TUNNEL_HOSTS` ให้ตรงโดเมน (ดูด้านล่าง)
+
+## ตั้งค่า POS V2 + ngrok (production checklist)
+
+### A. customer-web (same-origin — สำคัญ)
+
+สร้าง/แก้ `customer-web/.env.local`:
+
+```env
+NEXT_PUBLIC_API_BASE=
+BACKEND_INTERNAL_URL=http://localhost:4000
+```
+
+แล้ว `npm run build` + restart `pos-v2-web`
+
+### B. backend `.env`
+
+```env
+PUBLIC_BASE_URL=https://<your-static-domain>.ngrok-free.app
+ADMIN_CONTROL_TUNNEL_HOSTS=<your-static-domain>.ngrok-free.app
+ADMIN_CONTROL_LAN_ONLY=true
+```
+
+- `PUBLIC_BASE_URL` — QR ลูกค้า / discovery
+- `ADMIN_CONTROL_TUNNEL_HOSTS` — ให้แอดมินแก้เมนู/ร้านผ่าน ngrok ได้ (ไม่ถูก LAN guard บล็อก) โดยยังต้อง login + JWT
+
+ทางเลือก: แอดมินใช้ `http://192.168.x.x:3000` ใน Wi‑Fi ร้านเท่านั้น — ไม่ต้องตั้ง `ADMIN_CONTROL_TUNNEL_HOSTS`
+
+### C. ngrok config (`deploy/ngrok.yml`)
+
+คัดลอกจาก `deploy/ngrok.example.yml` ใส่ authtoken + static domain แล้ว restart:
+
+```bat
+D:\POS_V2\deploy\services\restart-services.bat
+```
+
+สคริปต์จะ start ngrok แบบ hidden และพิมพ์ public URL ใน log
+
+### D. Multi-store
+
+Login เลือกร้าน → QR แต่ละร้านใช้ `PUBLIC_BASE_URL` หรือ `stores.public_base_url` ในแอดมิน
+
+## เปรียบเทียบ ngrok vs Caddy vs Docker
+
+| สถานการณ์ | แนะนำ |
+|-----------|--------|
+| ร้านใช้ ngrok + WinSW อยู่แล้ว | **คง ngrok** — ดู checklist ด้านบน |
+| มี domain + public IP | Caddy (`deploy/Caddyfile`) |
+| lab / VPS | Docker (`deploy/docker/README.md`) |
+
+**ผมแนะนำ:** ร้านที่ใช้ ngrok อยู่แล้ว → **ไม่ต้องเปลี่ยนเป็น Docker/Caddy** จนกว่าจะมี domain จริง
