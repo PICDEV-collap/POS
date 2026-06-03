@@ -446,15 +446,13 @@ class _BluetoothPrinterSettingsState extends State<BluetoothPrinterSettings> {
             SwitchListTile(
               dense: true,
               contentPadding: EdgeInsets.zero,
-              title: const Text('🧾 พิมพ์ใบเสร็จลูกค้า'),
+              title: const Text('🧾 ใบเสร็จลูกค้า'),
               subtitle: const Text(
-                'ทั่วไปปิดไว้ — พิมพ์ตอนชำระแล้วจะตรงกว่า',
+                'staff/admin พิมพ์เองจากปุ่มใบเสร็จเท่านั้น',
                 style: TextStyle(fontSize: 10),
               ),
-              value: svc.autoPrintReceipt,
-              onChanged: svc.hasPrinter
-                  ? (v) => svc.setAutoPrint(receipt: v)
-                  : null,
+              value: false,
+              onChanged: null,
             ),
             if (!svc.hasPrinter)
               const Padding(

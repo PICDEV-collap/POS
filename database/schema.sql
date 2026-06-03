@@ -7,11 +7,14 @@ DROP TABLE IF EXISTS push_subscriptions CASCADE;
 DROP TABLE IF EXISTS realtime_events CASCADE;
 DROP TABLE IF EXISTS websocket_sessions CASCADE;
 DROP TABLE IF EXISTS printer_status CASCADE;
+DROP TABLE IF EXISTS mobile_print_claims CASCADE;
 DROP TABLE IF EXISTS print_jobs CASCADE;
 DROP TABLE IF EXISTS payment_transactions CASCADE;
+DROP TABLE IF EXISTS accounting_exports CASCADE;
 DROP TABLE IF EXISTS stock_movements CASCADE;
 DROP TABLE IF EXISTS order_items CASCADE;
 DROP TABLE IF EXISTS orders CASCADE;
+DROP TABLE IF EXISTS order_daily_sequences CASCADE;
 DROP TABLE IF EXISTS customer_order_sessions CASCADE;
 DROP TABLE IF EXISTS option_items CASCADE;
 DROP TABLE IF EXISTS option_groups CASCADE;
@@ -21,29 +24,119 @@ DROP TABLE IF EXISTS print_stations CASCADE;
 DROP TABLE IF EXISTS categories CASCADE;
 DROP TABLE IF EXISTS tables CASCADE;
 DROP TABLE IF EXISTS users CASCADE;
+DROP TABLE IF EXISTS stores CASCADE;
+DROP TABLE IF EXISTS restaurant_settings CASCADE;
+
+CREATE TABLE restaurant_settings (
+    id          INT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+    name        VARCHAR(128) NOT NULL DEFAULT 'POS V2 Restaurant',
+    logo        VARCHAR(8) DEFAULT '🍽️',
+    currency    VARCHAR(8) NOT NULL DEFAULT '฿',
+    base_url    TEXT,
+    auto_print_kitchen BOOLEAN NOT NULL DEFAULT FALSE,
+    auto_print_receipt BOOLEAN NOT NULL DEFAULT FALSE,
+    payment_qr_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+    payment_qr_type VARCHAR(24) NOT NULL DEFAULT 'promptpay',
+    payment_qr_id TEXT,
+    payment_qr_raw_payload TEXT,
+    payment_qr_account_name TEXT,
+    payment_qr_label TEXT NOT NULL DEFAULT 'สแกนจ่ายเงิน',
+    payment_qr_include_amount BOOLEAN NOT NULL DEFAULT TRUE,
+    payment_qr_ref1_prefix VARCHAR(12) NOT NULL DEFAULT 'ORDER',
+    payment_qr_ref2 VARCHAR(20),
+    payment_auto_close_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    ordering_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    ordering_open_time TIME NOT NULL DEFAULT '00:00',
+    ordering_close_time TIME NOT NULL DEFAULT '23:59',
+    ordering_timezone VARCHAR(64) NOT NULL DEFAULT 'Asia/Bangkok',
+    ordering_days INT[] NOT NULL DEFAULT ARRAY[0,1,2,3,4,5,6]::INT[],
+    ordering_require_session BOOLEAN NOT NULL DEFAULT TRUE,
+    ordering_require_private_ip BOOLEAN NOT NULL DEFAULT FALSE,
+    ordering_require_gps BOOLEAN NOT NULL DEFAULT FALSE,
+    ordering_shop_lat DOUBLE PRECISION CHECK (ordering_shop_lat IS NULL OR (ordering_shop_lat >= -90 AND ordering_shop_lat <= 90)),
+    ordering_shop_lng DOUBLE PRECISION CHECK (ordering_shop_lng IS NULL OR (ordering_shop_lng >= -180 AND ordering_shop_lng <= 180)),
+    ordering_max_distance_m INT NOT NULL DEFAULT 20 CHECK (ordering_max_distance_m BETWEEN 1 AND 10000),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+INSERT INTO restaurant_settings (id) VALUES (1);
+
+CREATE TABLE stores (
+    id                         SERIAL PRIMARY KEY,
+    code                       VARCHAR(32) UNIQUE NOT NULL,
+    slug                       VARCHAR(64) UNIQUE NOT NULL,
+    name                       VARCHAR(128) NOT NULL,
+    logo                       VARCHAR(16) DEFAULT '🍽️',
+    currency                   VARCHAR(8) NOT NULL DEFAULT '฿',
+    public_base_url            TEXT,
+    timezone                   VARCHAR(64) NOT NULL DEFAULT 'Asia/Bangkok',
+    ordering_enabled           BOOLEAN NOT NULL DEFAULT TRUE,
+    ordering_open_time         TIME NOT NULL DEFAULT '00:00',
+    ordering_close_time        TIME NOT NULL DEFAULT '23:59',
+    ordering_timezone          VARCHAR(64) NOT NULL DEFAULT 'Asia/Bangkok',
+    ordering_days              INT[] NOT NULL DEFAULT ARRAY[0,1,2,3,4,5,6]::INT[],
+    ordering_require_session   BOOLEAN NOT NULL DEFAULT TRUE,
+    ordering_require_private_ip BOOLEAN NOT NULL DEFAULT FALSE,
+    ordering_require_gps       BOOLEAN NOT NULL DEFAULT FALSE,
+    ordering_shop_lat          DOUBLE PRECISION,
+    ordering_shop_lng          DOUBLE PRECISION,
+    ordering_max_distance_m    INT NOT NULL DEFAULT 20,
+    is_active                  BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at                 TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at                 TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+INSERT INTO stores (
+    id, code, slug, name, logo, currency, public_base_url, timezone,
+    ordering_enabled, ordering_open_time, ordering_close_time,
+    ordering_timezone, ordering_days, ordering_require_session,
+    ordering_require_private_ip, ordering_require_gps,
+    ordering_shop_lat, ordering_shop_lng, ordering_max_distance_m
+)
+SELECT
+    1, 'default', 'default',
+    COALESCE(NULLIF(name, ''), 'POS V2 Restaurant'),
+    COALESCE(NULLIF(logo, ''), '🍽️'),
+    COALESCE(NULLIF(currency, ''), '฿'),
+    base_url,
+    COALESCE(NULLIF(ordering_timezone, ''), 'Asia/Bangkok'),
+    ordering_enabled, ordering_open_time, ordering_close_time,
+    ordering_timezone, ordering_days, ordering_require_session,
+    ordering_require_private_ip, ordering_require_gps,
+    ordering_shop_lat, ordering_shop_lng, ordering_max_distance_m
+FROM restaurant_settings
+WHERE id = 1;
+
+SELECT setval(pg_get_serial_sequence('stores', 'id'), GREATEST((SELECT MAX(id) FROM stores), 1), true);
 
 CREATE TABLE users (
     id           SERIAL PRIMARY KEY,
     username     VARCHAR(64) UNIQUE NOT NULL,
     password_hash TEXT NOT NULL,
     full_name    VARCHAR(128),
-    role         VARCHAR(16) NOT NULL CHECK (role IN ('admin', 'staff', 'kitchen')),
+    role         VARCHAR(16) NOT NULL CHECK (role IN ('super_admin', 'admin', 'staff', 'kitchen')),
+    store_id     INT NOT NULL DEFAULT 1 REFERENCES stores(id) ON DELETE RESTRICT,
+    allowed_store_ids INT[] NOT NULL DEFAULT ARRAY[1]::INT[],
+    permissions  JSONB NOT NULL DEFAULT '[]'::jsonb,
     is_active    BOOLEAN NOT NULL DEFAULT TRUE,
     created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE TABLE tables (
     id         SERIAL PRIMARY KEY,
-    code       VARCHAR(16) UNIQUE NOT NULL,        -- "A1", "B2" used in QR URL
+    store_id   INT NOT NULL DEFAULT 1 REFERENCES stores(id) ON DELETE RESTRICT,
+    code       VARCHAR(16) NOT NULL,
     name       VARCHAR(64) NOT NULL,
     seats      INT DEFAULT 4,
-    qr_token   VARCHAR(64) UNIQUE NOT NULL,        -- random token; rotate to invalidate
+    qr_token   VARCHAR(64) UNIQUE NOT NULL,
     is_active  BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+CREATE UNIQUE INDEX idx_tables_store_code_unique ON tables(store_id, lower(code));
+CREATE INDEX idx_tables_store_active ON tables(store_id, is_active);
 
 CREATE TABLE customer_order_sessions (
     id              BIGSERIAL PRIMARY KEY,
+    store_id        INT NOT NULL DEFAULT 1 REFERENCES stores(id) ON DELETE RESTRICT,
     session_token   VARCHAR(96) UNIQUE NOT NULL,
     table_id        INT NOT NULL REFERENCES tables(id) ON DELETE CASCADE,
     customer_key    VARCHAR(96) NOT NULL,
@@ -57,11 +150,13 @@ CREATE TABLE customer_order_sessions (
     revoked_at      TIMESTAMPTZ
 );
 CREATE INDEX idx_customer_order_sessions_table ON customer_order_sessions (table_id, last_seen_at DESC);
+CREATE INDEX idx_customer_order_sessions_store_table ON customer_order_sessions (store_id, table_id, last_seen_at DESC);
 CREATE INDEX idx_customer_order_sessions_key ON customer_order_sessions (customer_key, expires_at DESC) WHERE is_active = TRUE;
 CREATE INDEX idx_customer_order_sessions_expiry ON customer_order_sessions (expires_at) WHERE is_active = TRUE;
 
 CREATE TABLE categories (
     id         SERIAL PRIMARY KEY,
+    store_id   INT NOT NULL DEFAULT 1 REFERENCES stores(id) ON DELETE RESTRICT,
     name       VARCHAR(64) NOT NULL,
     icon       VARCHAR(8),                       -- emoji
     sort_order INT NOT NULL DEFAULT 0,
@@ -70,6 +165,7 @@ CREATE TABLE categories (
 
 CREATE TABLE print_stations (
     key          VARCHAR(32) PRIMARY KEY,
+    store_id     INT NOT NULL DEFAULT 1 REFERENCES stores(id) ON DELETE RESTRICT,
     name         VARCHAR(128) NOT NULL,
     station_type VARCHAR(16) NOT NULL DEFAULT 'kitchen'
                  CHECK (station_type IN ('kitchen', 'drink', 'snack', 'receipt', 'custom')),
@@ -80,14 +176,36 @@ CREATE TABLE print_stations (
     thai_cp      INT NOT NULL DEFAULT 21,
     render_mode  VARCHAR(16) NOT NULL DEFAULT 'text'
                  CHECK (render_mode IN ('text', 'image')),
+    paper_width_mm INT NOT NULL DEFAULT 58,
+    paper_height_mm INT NOT NULL DEFAULT 0,
+    paper_gap_mm INT NOT NULL DEFAULT 0,
+    width_px INT NOT NULL DEFAULT 384,
+    feed_lines INT NOT NULL DEFAULT 6,
+    bottom_feed_px INT NOT NULL DEFAULT 160,
+    raster_band_height INT NOT NULL DEFAULT 128,
+    cut_mode VARCHAR(16) NOT NULL DEFAULT 'partial'
+             CHECK (cut_mode IN ('none', 'partial', 'full')),
     is_active    BOOLEAN NOT NULL DEFAULT TRUE,
     sort_order   INT NOT NULL DEFAULT 0,
     created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+CREATE INDEX idx_print_stations_store_active ON print_stations(store_id, is_active, sort_order);
+
+INSERT INTO print_stations
+    (key, store_id, name, station_type, sort_order, width_chars, thai_cp, render_mode,
+     paper_width_mm, paper_height_mm, paper_gap_mm, width_px,
+     feed_lines, bottom_feed_px, raster_band_height, cut_mode)
+VALUES
+    ('kitchen', 1, 'ครัว / อาหาร', 'kitchen', 10, 42, 21, 'text', 58, 0, 0, 384, 6, 160, 128, 'partial'),
+    ('drink',   1, 'เครื่องดื่ม',   'drink',   20, 42, 21, 'text', 58, 0, 0, 384, 6, 160, 128, 'partial'),
+    ('snack',   1, 'ขนม / สต๊อก',  'snack',   30, 42, 21, 'text', 58, 0, 0, 384, 6, 160, 128, 'partial'),
+    ('receipt', 1, 'ใบเสร็จ / แคชเชียร์', 'receipt', 40, 42, 21, 'image', 58, 0, 0, 384, 6, 160, 128, 'full')
+ON CONFLICT (key) DO NOTHING;
 
 CREATE TABLE products (
     id          SERIAL PRIMARY KEY,
+    store_id    INT NOT NULL DEFAULT 1 REFERENCES stores(id) ON DELETE RESTRICT,
     category_id INT REFERENCES categories(id) ON DELETE SET NULL,
     name        VARCHAR(128) NOT NULL,
     description TEXT,
@@ -170,6 +288,7 @@ CREATE INDEX idx_option_items_group_sort ON option_items (group_id, sort_order, 
 
 CREATE TABLE orders (
     id            SERIAL PRIMARY KEY,
+    store_id      INT NOT NULL DEFAULT 1 REFERENCES stores(id) ON DELETE RESTRICT,
     table_id      INT NOT NULL REFERENCES tables(id),
     business_date DATE NOT NULL,
     daily_seq     INT NOT NULL,
@@ -187,14 +306,17 @@ CREATE TABLE orders (
     created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
-CREATE UNIQUE INDEX idx_orders_business_date_daily_seq ON orders (business_date, daily_seq);
+CREATE UNIQUE INDEX idx_orders_store_business_date_daily_seq ON orders (store_id, business_date, daily_seq);
 CREATE INDEX idx_orders_business_date_created_at ON orders (business_date, created_at, id);
+CREATE INDEX idx_orders_store_status_created ON orders (store_id, status, created_at DESC);
 CREATE INDEX idx_orders_customer_session ON orders (customer_session_id) WHERE customer_session_id IS NOT NULL;
 
 CREATE TABLE order_daily_sequences (
-    business_date DATE PRIMARY KEY,
+    store_id      INT NOT NULL DEFAULT 1 REFERENCES stores(id) ON DELETE RESTRICT,
+    business_date DATE NOT NULL,
     last_seq      INT NOT NULL DEFAULT 0,
-    updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (store_id, business_date)
 );
 
 CREATE TABLE order_items (
@@ -224,6 +346,7 @@ CREATE INDEX idx_order_items_cost_report ON order_items (order_id, product_id);
 
 CREATE TABLE stock_movements (
     id              SERIAL PRIMARY KEY,
+    store_id        INT NOT NULL DEFAULT 1 REFERENCES stores(id) ON DELETE RESTRICT,
     movement_key    TEXT UNIQUE NOT NULL,
     product_id      INT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
     order_id        INT REFERENCES orders(id) ON DELETE SET NULL,
@@ -237,45 +360,9 @@ CREATE TABLE stock_movements (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE restaurant_settings (
-    id          INT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
-    name        VARCHAR(128) NOT NULL DEFAULT 'POS V2 Restaurant',
-    logo        VARCHAR(8) DEFAULT '🍽️',
-    currency    VARCHAR(8) NOT NULL DEFAULT '฿',
-    base_url    TEXT,
-    -- When TRUE, every successful createOrder() auto-enqueues a kitchen
-    -- receipt (so kitchen sees the print without staff pressing 🖨️).
-    auto_print_kitchen BOOLEAN NOT NULL DEFAULT FALSE,
-    -- Same idea but for the customer receipt — usually FALSE (printed when
-    -- staff marks order as paid).
-    auto_print_receipt BOOLEAN NOT NULL DEFAULT FALSE,
-    payment_qr_enabled BOOLEAN NOT NULL DEFAULT FALSE,
-    payment_qr_type VARCHAR(24) NOT NULL DEFAULT 'promptpay',
-    payment_qr_id TEXT,
-    payment_qr_raw_payload TEXT,
-    payment_qr_account_name TEXT,
-    payment_qr_label TEXT NOT NULL DEFAULT 'สแกนจ่ายเงิน',
-    payment_qr_include_amount BOOLEAN NOT NULL DEFAULT TRUE,
-    payment_qr_ref1_prefix VARCHAR(12) NOT NULL DEFAULT 'ORDER',
-    payment_qr_ref2 VARCHAR(20),
-    payment_auto_close_enabled BOOLEAN NOT NULL DEFAULT TRUE,
-    ordering_enabled BOOLEAN NOT NULL DEFAULT TRUE,
-    ordering_open_time TIME NOT NULL DEFAULT '00:00',
-    ordering_close_time TIME NOT NULL DEFAULT '23:59',
-    ordering_timezone VARCHAR(64) NOT NULL DEFAULT 'Asia/Bangkok',
-    ordering_days INT[] NOT NULL DEFAULT ARRAY[0,1,2,3,4,5,6]::INT[],
-    ordering_require_session BOOLEAN NOT NULL DEFAULT TRUE,
-    ordering_require_private_ip BOOLEAN NOT NULL DEFAULT FALSE,
-    ordering_require_gps BOOLEAN NOT NULL DEFAULT FALSE,
-    ordering_shop_lat DOUBLE PRECISION CHECK (ordering_shop_lat IS NULL OR (ordering_shop_lat >= -90 AND ordering_shop_lat <= 90)),
-    ordering_shop_lng DOUBLE PRECISION CHECK (ordering_shop_lng IS NULL OR (ordering_shop_lng >= -180 AND ordering_shop_lng <= 180)),
-    ordering_max_distance_m INT NOT NULL DEFAULT 20 CHECK (ordering_max_distance_m BETWEEN 1 AND 10000),
-    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-INSERT INTO restaurant_settings (id) VALUES (1);
-
 CREATE TABLE payment_transactions (
     id                SERIAL PRIMARY KEY,
+    store_id          INT NOT NULL DEFAULT 1 REFERENCES stores(id) ON DELETE RESTRICT,
     order_id          INT REFERENCES orders(id) ON DELETE SET NULL,
     provider          VARCHAR(32) NOT NULL DEFAULT 'manual',
     provider_event_id TEXT,
@@ -298,6 +385,7 @@ CREATE INDEX idx_payment_transactions_status ON payment_transactions(status, cre
 
 CREATE TABLE accounting_exports (
     id           SERIAL PRIMARY KEY,
+    store_id     INT NOT NULL DEFAULT 1 REFERENCES stores(id) ON DELETE RESTRICT,
     export_type  VARCHAR(32) NOT NULL,
     from_date    DATE NOT NULL,
     to_date      DATE NOT NULL,
@@ -307,10 +395,27 @@ CREATE TABLE accounting_exports (
 );
 CREATE INDEX idx_accounting_exports_created ON accounting_exports (created_at DESC);
 
+CREATE TABLE mobile_print_claims (
+    id             SERIAL PRIMARY KEY,
+    order_id       INT NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+    type           VARCHAR(16) NOT NULL CHECK (type IN ('kitchen', 'receipt')),
+    status         VARCHAR(16) NOT NULL DEFAULT 'claimed'
+                   CHECK (status IN ('claimed', 'success', 'failed', 'expired')),
+    claimed_by     INT REFERENCES users(id) ON DELETE SET NULL,
+    claimed_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at     TIMESTAMPTZ NOT NULL DEFAULT NOW() + INTERVAL '15 minutes',
+    completed_at   TIMESTAMPTZ,
+    error          TEXT,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (order_id, type)
+);
+CREATE INDEX idx_mobile_print_claims_status ON mobile_print_claims(status, expires_at);
+
 CREATE TABLE print_jobs (
     id              SERIAL PRIMARY KEY,
     job_uuid        UUID NOT NULL DEFAULT gen_random_uuid(),
-    type            VARCHAR(16) NOT NULL CHECK (type IN ('kitchen', 'receipt', 'test', 'custom')),
+    type            VARCHAR(16) NOT NULL CHECK (type IN ('kitchen', 'receipt', 'test', 'custom', 'qr', 'barcode')),
     order_id        INT REFERENCES orders(id) ON DELETE SET NULL,
     label           VARCHAR(128),                      -- short human label, e.g. "Kitchen receipt #42"
     payload         BYTEA NOT NULL,                    -- pre-rendered ESC/POS bytes
@@ -340,11 +445,16 @@ CREATE INDEX idx_orders_status         ON orders(status);
 CREATE INDEX idx_orders_table          ON orders(table_id);
 CREATE INDEX idx_order_items_order     ON order_items(order_id);
 CREATE INDEX idx_products_category     ON products(category_id);
-CREATE UNIQUE INDEX idx_products_barcode_unique ON products(barcode) WHERE barcode IS NOT NULL AND barcode <> '';
+CREATE INDEX idx_categories_store_sort ON categories(store_id, is_active, sort_order, id);
+CREATE INDEX idx_products_store_category ON products(store_id, category_id, is_available, sort_order, id);
+CREATE INDEX idx_products_store_barcode ON products(store_id, barcode) WHERE barcode IS NOT NULL;
 CREATE INDEX idx_products_print_station ON products(print_station_key);
 CREATE INDEX idx_order_items_print_station ON order_items(order_id, print_station_key);
 CREATE INDEX idx_stock_movements_product_created ON stock_movements(product_id, created_at DESC);
+CREATE INDEX idx_stock_movements_store_created ON stock_movements(store_id, created_at DESC);
 CREATE INDEX idx_stock_movements_order ON stock_movements(order_id, order_item_id);
+CREATE INDEX idx_payment_transactions_store_created ON payment_transactions(store_id, created_at DESC);
+CREATE INDEX idx_accounting_exports_store_created ON accounting_exports(store_id, created_at DESC);
 CREATE INDEX idx_print_jobs_due        ON print_jobs(status, next_attempt_at, priority, created_at) WHERE status IN ('pending', 'retrying');
 CREATE INDEX idx_print_jobs_processing_deadline ON print_jobs(processing_deadline_at) WHERE status = 'processing';
 CREATE UNIQUE INDEX idx_print_jobs_dedupe_active ON print_jobs(dedupe_key) WHERE dedupe_key IS NOT NULL AND status <> 'cancelled';

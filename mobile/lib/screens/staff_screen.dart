@@ -87,6 +87,8 @@ class _StaffScreenState extends State<StaffScreen> with WidgetsBindingObserver {
   bool _reloadOrdersAgain = false;
   String _scanCode = '';
   bool _scanBusy = false;
+  bool _qrPrintBusy = false;
+  final Set<int> _availBusyIds = <int>{};
   final TextEditingController _scanController = TextEditingController();
   Timer? _pollTimer;
 
@@ -101,6 +103,20 @@ class _StaffScreenState extends State<StaffScreen> with WidgetsBindingObserver {
     final s = context.read<SocketService>();
     s.on('order:new', _onEvt);
     s.on('order:update', _onEvt);
+    s.on('product:availability', _onAvailEvt);
+  }
+
+  void _onAvailEvt(dynamic payload) {
+    if (payload is! Map) return;
+    final id = payload['id'];
+    final avail = payload['is_available'];
+    if (id is! int || avail is! bool) return;
+    if (!mounted) return;
+    setState(() {
+      _products = _products
+          .map((p) => p.id == id ? p.copyWith(isAvailable: avail) : p)
+          .toList();
+    });
   }
 
   @override
@@ -108,6 +124,7 @@ class _StaffScreenState extends State<StaffScreen> with WidgetsBindingObserver {
     final s = context.read<SocketService>();
     s.off('order:new', _onEvt);
     s.off('order:update', _onEvt);
+    s.off('product:availability', _onAvailEvt);
     _pollTimer?.cancel();
     _scanController.dispose();
     WidgetsBinding.instance.removeObserver(this);
@@ -133,11 +150,39 @@ class _StaffScreenState extends State<StaffScreen> with WidgetsBindingObserver {
     unawaited(_reloadOrders());
   }
 
+  Future<void> _logout() async {
+    final auth = context.read<AuthService>();
+    final socket = context.read<SocketService>();
+    await auth.logout();
+    socket.disconnect();
+  }
+
+  Future<void> _handleBack() async {
+    if (!mounted) return;
+    if (_selectedTable != null) {
+      setState(() {
+        _selectedTable = null;
+        _cart.clear();
+      });
+      return;
+    }
+    await _logout();
+  }
+
+  void _retryBootstrap() {
+    setState(() {
+      _loading = true;
+      _err = null;
+    });
+    unawaited(_bootstrap());
+  }
+
   Future<void> _bootstrap() async {
     try {
-      final menuFut = _api.publicMenu();
+      // includeUnavailable so staff can toggle sold-out items back on
+      final menuFut = _api.publicMenu(includeUnavailable: true);
       final tablesFut = _api.tables();
-      final ordersFut = _api.listOrders();
+      final ordersFut = _api.listOrders(includeDetails: false);
       final results = await Future.wait([menuFut, tablesFut, ordersFut]);
       final menu = results[0] as Map<String, dynamic>;
       final tables = results[1] as List<PosTable>;
@@ -171,7 +216,7 @@ class _StaffScreenState extends State<StaffScreen> with WidgetsBindingObserver {
     }
     _reloadOrdersInFlight = true;
     try {
-      final list = await _api.listOrders();
+      final list = await _api.listOrders(includeDetails: false);
       if (!mounted) return;
       setState(() {
         _orders = list;
@@ -226,6 +271,43 @@ class _StaffScreenState extends State<StaffScreen> with WidgetsBindingObserver {
           ? newItem
           : cur.copyWith(qty: cur.qty + 1);
     });
+  }
+
+  Future<void> _toggleProductAvailability(Product p) async {
+    if (_availBusyIds.contains(p.id)) return; // double-tap guard
+    setState(() => _availBusyIds.add(p.id));
+    try {
+      final saved = await _api.setProductAvailability(
+        p.id,
+        isAvailable: !p.isAvailable,
+      );
+      final nextAvail = saved['is_available'] as bool? ?? !p.isAvailable;
+      if (!mounted) return;
+      setState(() {
+        _products = _products
+            .map((x) => x.id == p.id ? x.copyWith(isAvailable: nextAvail) : x)
+            .toList();
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(nextAvail
+              ? '${p.name} — เปิดขายแล้ว'
+              : '${p.name} — ปิดขาย (ของหมด)'),
+          duration: const Duration(seconds: 2),
+        ),
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('เปลี่ยนสถานะไม่สำเร็จ: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _availBusyIds.remove(p.id));
+    }
   }
 
   Future<void> _addScannedProduct() async {
@@ -596,9 +678,14 @@ class _StaffScreenState extends State<StaffScreen> with WidgetsBindingObserver {
     final url = '$base/order?t=${table.qrToken}';
     final isLan = _isLanLikeUrl(base);
     if (!mounted) return;
+    final role = context.read<AuthService>().user?.role;
+    final canPrint = role == 'admin' || role == 'super_admin' || role == 'staff';
     showDialog(
       context: context,
-      builder: (_) => Dialog(
+      builder: (dialogCtx) => StatefulBuilder(
+        builder: (ctx, setDialogState) {
+          var printing = _qrPrintBusy;
+          return Dialog(
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
         child: Padding(
           padding: const EdgeInsets.all(20),
@@ -622,6 +709,7 @@ class _StaffScreenState extends State<StaffScreen> with WidgetsBindingObserver {
               const SizedBox(height: 14),
               Image.network(
                 _api.qrUrl(url, size: 480),
+                headers: AppConfig.tunnelHeaders,
                 width: 280,
                 height: 280,
                 fit: BoxFit.contain,
@@ -663,8 +751,10 @@ class _StaffScreenState extends State<StaffScreen> with WidgetsBindingObserver {
                 ),
               ],
               const SizedBox(height: 14),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.end,
+              Wrap(
+                alignment: WrapAlignment.end,
+                spacing: 8,
+                runSpacing: 8,
                 children: [
                   TextButton.icon(
                     icon: const Icon(Icons.open_in_new),
@@ -676,13 +766,67 @@ class _StaffScreenState extends State<StaffScreen> with WidgetsBindingObserver {
                       );
                     },
                   ),
-                  const SizedBox(width: 8),
+                  if (canPrint)
+                    ElevatedButton.icon(
+                      icon: printing
+                          ? const SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: Colors.white,
+                              ),
+                            )
+                          : const Icon(Icons.receipt_long),
+                      label: Text(printing ? 'กำลังส่ง…' : '🧾 พิมพ์ QR'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: _kNavy,
+                        foregroundColor: Colors.white,
+                      ),
+                      onPressed: printing
+                          ? null
+                          : () async {
+                              if (_qrPrintBusy) return; // double-tap guard
+                              setState(() => _qrPrintBusy = true);
+                              setDialogState(() {});
+                              try {
+                                await _api.printQrLabel(
+                                  url: url,
+                                  tableName: table.name,
+                                  tableCode: table.code,
+                                );
+                                if (mounted) {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(
+                                      content: Text(
+                                        'ส่งคิวพิมพ์ QR "${table.name}" แล้ว',
+                                      ),
+                                    ),
+                                  );
+                                }
+                              } catch (e) {
+                                if (mounted) {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(
+                                      content: Text('พิมพ์ไม่สำเร็จ: $e'),
+                                      backgroundColor: Colors.red,
+                                    ),
+                                  );
+                                }
+                              } finally {
+                                if (mounted) {
+                                  setState(() => _qrPrintBusy = false);
+                                }
+                                if (ctx.mounted) setDialogState(() {});
+                              }
+                            },
+                    ),
                   ElevatedButton(
                     style: ElevatedButton.styleFrom(
-                      backgroundColor: _kNavy,
-                      foregroundColor: Colors.white,
+                      backgroundColor: Colors.grey.shade200,
+                      foregroundColor: Colors.black87,
                     ),
-                    onPressed: () => Navigator.pop(context),
+                    onPressed: () => Navigator.pop(dialogCtx),
                     child: const Text('ปิด'),
                   ),
                 ],
@@ -690,6 +834,8 @@ class _StaffScreenState extends State<StaffScreen> with WidgetsBindingObserver {
             ],
           ),
         ),
+      );
+        },
       ),
     );
   }
@@ -698,26 +844,87 @@ class _StaffScreenState extends State<StaffScreen> with WidgetsBindingObserver {
   Widget build(BuildContext context) {
     final auth = context.watch<AuthService>();
     if (_loading) {
-      return Scaffold(
-        appBar: AppBar(
-          title: const Text('Staff'),
-          backgroundColor: _kNavy,
-          foregroundColor: Colors.white,
+      return PopScope<void>(
+        canPop: false,
+        onPopInvokedWithResult: (didPop, _) {
+          if (!didPop) unawaited(_handleBack());
+        },
+        child: Scaffold(
+          appBar: AppBar(
+            title: const Text('Staff'),
+            backgroundColor: _kNavy,
+            foregroundColor: Colors.white,
+            leading: IconButton(
+              tooltip: 'กลับหน้า Login',
+              icon: const Icon(Icons.arrow_back),
+              onPressed: () => unawaited(_handleBack()),
+            ),
+          ),
+          body: const Center(child: CircularProgressIndicator()),
         ),
-        body: const Center(child: CircularProgressIndicator()),
       );
     }
     if (_err != null) {
-      return Scaffold(
-        appBar: AppBar(
-          title: const Text('Staff'),
-          backgroundColor: _kNavy,
-          foregroundColor: Colors.white,
-        ),
-        body: Center(
-          child: Padding(
-            padding: const EdgeInsets.all(20),
-            child: Text(_err!, style: const TextStyle(color: Colors.red)),
+      return PopScope<void>(
+        canPop: false,
+        onPopInvokedWithResult: (didPop, _) {
+          if (!didPop) unawaited(_handleBack());
+        },
+        child: Scaffold(
+          appBar: AppBar(
+            title: const Text('Staff'),
+            backgroundColor: _kNavy,
+            foregroundColor: Colors.white,
+            leading: IconButton(
+              tooltip: 'กลับหน้า Login',
+              icon: const Icon(Icons.arrow_back),
+              onPressed: () => unawaited(_handleBack()),
+            ),
+          ),
+          body: Center(
+            child: Padding(
+              padding: const EdgeInsets.all(20),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    _err!,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      color: Colors.red,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    'Server: ${AppConfig.apiBase}\nBuild: ${AppConfig.buildLabel}',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: Colors.grey[700],
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 18),
+                  Wrap(
+                    alignment: WrapAlignment.center,
+                    spacing: 10,
+                    runSpacing: 10,
+                    children: [
+                      OutlinedButton.icon(
+                        onPressed: () => unawaited(_handleBack()),
+                        icon: const Icon(Icons.arrow_back),
+                        label: const Text('กลับหน้า Login'),
+                      ),
+                      FilledButton.icon(
+                        onPressed: _retryBootstrap,
+                        icon: const Icon(Icons.refresh),
+                        label: const Text('ลองใหม่'),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
           ),
         ),
       );
@@ -733,58 +940,71 @@ class _StaffScreenState extends State<StaffScreen> with WidgetsBindingObserver {
                     o.status != 'cancelled',
               )
               .toList();
+    // Show unavailable products too so staff can toggle them back. The
+    // "+" button is hidden for unavailable items inside the card builder.
     final categoryProducts = _activeCat == null
         ? <Product>[]
-        : _products
-              .where((p) => p.categoryId == _activeCat && p.isAvailable)
-              .toList();
+        : _products.where((p) => p.categoryId == _activeCat).toList();
     final cartTotal = _cart.values.fold<double>(
       0,
       (s, c) => s + c.unitPrice * c.qty,
     );
     final cartCount = _cart.values.fold<int>(0, (s, c) => s + c.qty);
 
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(
-          'Staff · ${auth.user?.fullName ?? auth.user?.username ?? ""}',
-        ),
-        backgroundColor: _kNavy,
-        foregroundColor: Colors.white,
-        actions: [
-          IconButton(
-            tooltip: 'ตั้งค่าเครื่องพิมพ์',
-            icon: Icon(
-              Icons.print,
-              color: context.watch<BluetoothPrinterService>().hasPrinter
-                  ? const Color(0xFF06D6A0)
-                  : Colors.white70,
-            ),
-            onPressed: () => Navigator.of(context).push(
-              MaterialPageRoute(
-                builder: (_) =>
-                    BluetoothPrinterSettings(api: _api, wrapInScaffold: true),
+    return PopScope<void>(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) unawaited(_handleBack());
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          title: Text(
+            'Staff · ${auth.user?.fullName ?? auth.user?.username ?? ""}',
+          ),
+          backgroundColor: _kNavy,
+          foregroundColor: Colors.white,
+          leading: IconButton(
+            tooltip: _selectedTable == null
+                ? 'กลับหน้า Login'
+                : 'กลับไปเลือกโต๊ะ',
+            icon: const Icon(Icons.arrow_back),
+            onPressed: () => unawaited(_handleBack()),
+          ),
+          actions: [
+            IconButton(
+              tooltip: 'ตั้งค่าเครื่องพิมพ์',
+              icon: Icon(
+                Icons.print,
+                color: context.watch<BluetoothPrinterService>().hasPrinter
+                    ? const Color(0xFF06D6A0)
+                    : Colors.white70,
+              ),
+              onPressed: () => Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) =>
+                      BluetoothPrinterSettings(api: _api, wrapInScaffold: true),
+                ),
               ),
             ),
-          ),
-          IconButton(
-            tooltip: 'admin / kitchen login',
-            onPressed: _openAdminLogin,
-            icon: const Icon(Icons.admin_panel_settings),
-          ),
-          IconButton(
-            tooltip: 'web staff',
-            onPressed: _openWebStaff,
-            icon: const Icon(Icons.open_in_browser),
-          ),
-        ],
+            IconButton(
+              tooltip: 'admin / kitchen login',
+              onPressed: _openAdminLogin,
+              icon: const Icon(Icons.admin_panel_settings),
+            ),
+            IconButton(
+              tooltip: 'web staff',
+              onPressed: _openWebStaff,
+              icon: const Icon(Icons.open_in_browser),
+            ),
+          ],
+        ),
+        body: _selectedTable == null
+            ? _buildTableList()
+            : _buildOrderingView(selectedTableOrders, categoryProducts),
+        bottomSheet: (_selectedTable != null && _cart.isNotEmpty)
+            ? _buildCartBar(cartCount, cartTotal)
+            : null,
       ),
-      body: _selectedTable == null
-          ? _buildTableList()
-          : _buildOrderingView(selectedTableOrders, categoryProducts),
-      bottomSheet: (_selectedTable != null && _cart.isNotEmpty)
-          ? _buildCartBar(cartCount, cartTotal)
-          : null,
     );
   }
 
@@ -1048,122 +1268,190 @@ class _StaffScreenState extends State<StaffScreen> with WidgetsBindingObserver {
                   itemCount: products.length,
                   itemBuilder: (_, i) {
                     final p = products[i];
-                    // Sum across all variant/option combos of this product.
                     final qty = _cart.values
                         .where((c) => c.product.id == p.id)
                         .fold<int>(0, (s, c) => s + c.qty);
-                    // "Simple" = no variants AND no option groups → can use the
-                    // inline ± stepper, single cart line. Otherwise the user
-                    // must use the picker dialog (each combo = own cart line).
                     final simple =
                         (p.variants?.isEmpty ?? true) &&
                         (p.options?.isEmpty ?? true);
                     final simpleKey = simple ? '${p.id}::::' : null;
-                    return Card(
-                      child: Padding(
-                        padding: const EdgeInsets.all(8),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: [
-                            if (p.imageUrl != null && p.imageUrl!.isNotEmpty)
-                              SizedBox(
-                                height: 60,
-                                child: Image.network(
-                                  _api.imageUrl(p.imageUrl),
-                                  fit: BoxFit.cover,
-                                  errorBuilder: (_, __, ___) => Container(
-                                    color: Colors.grey[100],
-                                    child: const Icon(
-                                      Icons.fastfood,
-                                      color: Colors.grey,
-                                    ),
-                                  ),
-                                ),
-                              ),
-                            const SizedBox(height: 4),
-                            Text(
-                              p.name,
-                              style: const TextStyle(
-                                fontSize: 13,
-                                fontWeight: FontWeight.bold,
-                              ),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                            if (p.description != null &&
-                                p.description!.isNotEmpty)
-                              Text(
-                                p.description!,
-                                style: const TextStyle(
-                                  fontSize: 10,
-                                  color: Colors.grey,
-                                ),
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            const Spacer(),
-                            Row(
-                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                              children: [
-                                Text(
-                                  '฿${p.price.toStringAsFixed(0)}',
-                                  style: const TextStyle(
-                                    color: _kOrange,
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                                ),
-                                (simple && qty > 0)
-                                    ? Row(
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: [
-                                          _qtyBtn(
-                                            '−',
-                                            () => _setQty(simpleKey!, qty - 1),
+                    final busy = _availBusyIds.contains(p.id);
+                    return Stack(
+                      children: [
+                        Opacity(
+                          opacity: p.isAvailable ? 1.0 : 0.55,
+                          child: Card(
+                            child: Padding(
+                              padding: const EdgeInsets.all(8),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.stretch,
+                                children: [
+                                  if (p.imageUrl != null && p.imageUrl!.isNotEmpty)
+                                    SizedBox(
+                                      height: 60,
+                                      child: Image.network(
+                                        _api.imageUrl(p.imageUrl),
+                                        headers: AppConfig.tunnelHeaders,
+                                        fit: BoxFit.cover,
+                                        errorBuilder: (_, _, _) => Container(
+                                          color: Colors.grey[100],
+                                          child: const Icon(
+                                            Icons.fastfood,
+                                            color: Colors.grey,
                                           ),
-                                          Padding(
-                                            padding: const EdgeInsets.symmetric(
-                                              horizontal: 6,
+                                        ),
+                                      ),
+                                    ),
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    p.name,
+                                    style: const TextStyle(
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                  if (p.description != null &&
+                                      p.description!.isNotEmpty)
+                                    Text(
+                                      p.description!,
+                                      style: const TextStyle(
+                                        fontSize: 10,
+                                        color: Colors.grey,
+                                      ),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  const Spacer(),
+                                  Row(
+                                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                    children: [
+                                      Text(
+                                        '฿${p.price.toStringAsFixed(0)}',
+                                        style: const TextStyle(
+                                          color: _kOrange,
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      ),
+                                      if (!p.isAvailable)
+                                        const Text(
+                                          'ปิดขาย',
+                                          style: TextStyle(
+                                            fontSize: 11,
+                                            color: Colors.grey,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        )
+                                      else if (simple && qty > 0)
+                                        Row(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            _qtyBtn(
+                                              '−',
+                                              () => _setQty(simpleKey!, qty - 1),
                                             ),
-                                            child: Text(
-                                              '$qty',
-                                              style: const TextStyle(
-                                                fontWeight: FontWeight.bold,
+                                            Padding(
+                                              padding: const EdgeInsets.symmetric(
+                                                horizontal: 6,
+                                              ),
+                                              child: Text(
+                                                '$qty',
+                                                style: const TextStyle(
+                                                  fontWeight: FontWeight.bold,
+                                                ),
                                               ),
                                             ),
-                                          ),
-                                          _qtyBtn(
-                                            '+',
-                                            () => _addToCart(p),
-                                            filled: true,
-                                          ),
-                                        ],
-                                      )
-                                    : InkWell(
-                                        onTap: () => _addToCart(p),
-                                        child: Container(
-                                          width: 28,
-                                          height: 28,
-                                          decoration: const BoxDecoration(
-                                            color: _kNavy,
-                                            shape: BoxShape.circle,
-                                          ),
-                                          child: const Center(
-                                            child: Text(
+                                            _qtyBtn(
                                               '+',
-                                              style: TextStyle(
-                                                color: Colors.white,
-                                                fontSize: 18,
-                                                fontWeight: FontWeight.bold,
+                                              () => _addToCart(p),
+                                              filled: true,
+                                            ),
+                                          ],
+                                        )
+                                      else
+                                        InkWell(
+                                          onTap: () => _addToCart(p),
+                                          child: Container(
+                                            width: 28,
+                                            height: 28,
+                                            decoration: const BoxDecoration(
+                                              color: _kNavy,
+                                              shape: BoxShape.circle,
+                                            ),
+                                            child: const Center(
+                                              child: Text(
+                                                '+',
+                                                style: TextStyle(
+                                                  color: Colors.white,
+                                                  fontSize: 18,
+                                                  fontWeight: FontWeight.bold,
+                                                ),
                                               ),
                                             ),
                                           ),
                                         ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 6),
+                                  SizedBox(
+                                    height: 26,
+                                    child: TextButton(
+                                      onPressed: busy
+                                          ? null
+                                          : () => _toggleProductAvailability(p),
+                                      style: TextButton.styleFrom(
+                                        padding: EdgeInsets.zero,
+                                        minimumSize: const Size(0, 26),
+                                        backgroundColor: p.isAvailable
+                                            ? const Color(0xFFFEF0EF)
+                                            : const Color(0xFFE8F5E9),
+                                        foregroundColor: p.isAvailable
+                                            ? const Color(0xFFC0392B)
+                                            : const Color(0xFF1F6F43),
                                       ),
-                              ],
+                                      child: Text(
+                                        busy
+                                            ? '...'
+                                            : (p.isAvailable
+                                                ? '🛑 ปิดขาย'
+                                                : '✓ เปิดขาย'),
+                                        style: const TextStyle(
+                                          fontSize: 11,
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
                             ),
-                          ],
+                          ),
                         ),
-                      ),
+                        if (!p.isAvailable)
+                          Positioned(
+                            top: 8,
+                            right: 8,
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 8,
+                                vertical: 3,
+                              ),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFFC0392B),
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                              child: const Text(
+                                'ของหมด',
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ),
+                          ),
+                      ],
                     );
                   },
                 ),

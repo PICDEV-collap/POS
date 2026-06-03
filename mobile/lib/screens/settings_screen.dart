@@ -61,10 +61,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _testing = true;
       _testResult = null;
     });
-    final url = _urlCtrl.text.trim().replaceAll(RegExp(r'/$'), '');
+    final url = AppConfig.normalizeBase(_urlCtrl.text);
+    if (url != _urlCtrl.text.trim()) {
+      _urlCtrl.text = url;
+    }
+    final client = AppConfig.httpClientFor(url);
     try {
-      final res = await http
-          .get(Uri.parse('$url/api/discovery/info'))
+      final res = await client
+          .get(
+            Uri.parse('$url/api/discovery/info'),
+            headers: AppConfig.tunnelHeadersFor(url),
+          )
           .timeout(const Duration(seconds: 4));
       if (res.statusCode == 200) {
         final j = jsonDecode(res.body) as Map<String, dynamic>;
@@ -80,15 +87,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
       }
     } catch (e) {
       setState(() {
-        _testResult = '❌ ${e.toString()}';
+        _testResult = '❌ ${_friendlyNetworkError(e, url)}';
       });
     } finally {
+      client.close();
       if (mounted) {
         setState(() {
           _testing = false;
         });
       }
     }
+  }
+
+  String _friendlyNetworkError(Object e, String url) {
+    return AppConfig.friendlyNetworkError(e, url: url);
   }
 
   bool get _supportsMdns =>
@@ -317,7 +329,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
             controller: _urlCtrl,
             decoration: const InputDecoration(
               border: OutlineInputBorder(),
-              hintText: 'http://192.168.1.10:4000',
+              hintText:
+                  'http://192.168.1.10:4000 หรือ https://xxxxx.ngrok-free.dev',
             ),
           ),
           const SizedBox(height: 12),
@@ -363,6 +376,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
           const Text(
             'สแกน Server บน LAN',
             style: TextStyle(fontWeight: FontWeight.bold),
+          ),
+          const SizedBox(height: 4),
+          const Text(
+            'ถ้าใช้งานนอกวง LAN ให้กรอก Public URL/ngrok แล้วกดทดสอบ',
+            style: TextStyle(fontSize: 12, color: Colors.grey),
           ),
           const SizedBox(height: 6),
           if (!_supportsMdns)

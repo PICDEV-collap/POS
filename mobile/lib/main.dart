@@ -15,6 +15,7 @@ import 'screens/login_screen.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  AppConfig.installNetworkOverrides();
   await AppConfig.bootstrap();
   final auth = AuthService();
   await auth.bootstrap(restoreSession: false);
@@ -135,9 +136,128 @@ class _RootRouterState extends State<_RootRouter> with WidgetsBindingObserver {
       case 'staff':
         return const StaffScreen();
       case 'admin':
+        if (AppConfig.isPublicRemoteBase &&
+            auth.user?.isMobileStoreAdmin != true) {
+          return const _RemoteStoreAdminRequiredScreen();
+        }
+        return const AdminScreen();
+      case 'super_admin':
+        if (AppConfig.isPublicRemoteBase) {
+          return const _RemoteSuperAdminBlockedScreen();
+        }
         return const AdminScreen();
       default:
         return const Scaffold(body: Center(child: Text('Unknown role')));
     }
+  }
+}
+
+class _RemoteStoreAdminRequiredScreen extends StatelessWidget {
+  const _RemoteStoreAdminRequiredScreen();
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Mobile Admin'),
+        backgroundColor: const Color(0xFF1A1A2E),
+        foregroundColor: Colors.white,
+        actions: [
+          IconButton(
+            onPressed: () => context.read<AuthService>().logout(),
+            icon: const Icon(Icons.logout),
+          ),
+        ],
+      ),
+      body: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 420),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.lock_outline, size: 56),
+                const SizedBox(height: 16),
+                const Text(
+                  'บัญชีนี้ยังไม่ได้เปิดสิทธิ์ mobile store admin',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'ให้สร้างบัญชี admin ที่ผูกกับร้านและมี permission mobile_admin ก่อนใช้งานนอกวง LAN',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Colors.grey[700]),
+                ),
+                const SizedBox(height: 20),
+                FilledButton.icon(
+                  onPressed: () => context.read<AuthService>().logout(),
+                  icon: const Icon(Icons.logout),
+                  label: const Text('ออกจากระบบ'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _RemoteSuperAdminBlockedScreen extends StatelessWidget {
+  const _RemoteSuperAdminBlockedScreen();
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Server Admin'),
+        backgroundColor: const Color(0xFF1A1A2E),
+        foregroundColor: Colors.white,
+        actions: [
+          IconButton(
+            onPressed: () => context.read<AuthService>().logout(),
+            icon: const Icon(Icons.logout),
+          ),
+        ],
+      ),
+      body: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 420),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(
+                  Icons.admin_panel_settings,
+                  size: 56,
+                  color: Color(0xFF1A1A2E),
+                ),
+                const SizedBox(height: 16),
+                const Text(
+                  'บัญชี server admin ใช้ได้เฉพาะในวง LAN ของเครื่อง server',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'ถ้าต้องจัดการร้านจากมือถือผ่าน public URL ให้ใช้บัญชี store admin ที่ผูกกับร้านนั้น',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Colors.grey[700]),
+                ),
+                const SizedBox(height: 20),
+                FilledButton.icon(
+                  onPressed: () => context.read<AuthService>().logout(),
+                  icon: const Icon(Icons.logout),
+                  label: const Text('ออกจากระบบ'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
   }
 }

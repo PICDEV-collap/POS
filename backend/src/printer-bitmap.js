@@ -7,6 +7,7 @@ const path = require('path');
 const canvasLib = require('@napi-rs/canvas');
 const QRCode = require('qrcode');
 const { paymentQrMeta } = require('./lib/thaiQrPayment');
+const { CODE128_PATTERNS, code128BValues } = require('./lib/code128');
 
 const ESC = 0x1b;
 const GS  = 0x1d;
@@ -113,6 +114,26 @@ function ensureFont(fontPath) {
   return false;
 }
 
+function barcodeRenderInfo(barcode, width, requestedHeightPx) {
+  const values = code128BValues(barcode);
+  const moduleSum = values
+    .map((v) => CODE128_PATTERNS[v])
+    .join('')
+    .split('')
+    .reduce((sum, n) => sum + Number(n), 0);
+  const innerWidth = Math.max(width - 16, 100);
+  // pick module width so bars fit within the inner width including 10-module
+  // quiet zone on both sides
+  const moduleWidth = Math.max(
+    1,
+    Math.floor((innerWidth - 20) / moduleSum) || 1
+  );
+  const quietPx = moduleWidth * 10;
+  const totalWidth = moduleSum * moduleWidth + quietPx * 2;
+  const barHeight = Math.max(40, Math.min(140, Number(requestedHeightPx) || 80));
+  return { values, moduleWidth, quietPx, totalWidth, barHeight, totalHeight: barHeight };
+}
+
 function qrRenderInfo(payload, width, requestedSize) {
   const qr = QRCode.create(String(payload), { errorCorrectionLevel: 'M' });
   const quiet = 4;
@@ -123,16 +144,79 @@ function qrRenderInfo(payload, width, requestedSize) {
   return { qr, quiet, matrixSize, cell, pixelSize };
 }
 
+function thaiClusters(text) {
+  const marks = /[\u0e31\u0e34-\u0e3a\u0e47-\u0e4e]/;
+  const out = [];
+  for (const ch of Array.from(String(text ?? ''))) {
+    if (marks.test(ch) && out.length) out[out.length - 1] += ch;
+    else out.push(ch);
+  }
+  return out;
+}
+
+function wrapMeasuredText(text, ctx, maxWidth) {
+  const max = Math.max(24, Number(maxWidth) || 24);
+  const result = [];
+  for (const paragraph of String(text ?? '').split(/\r?\n/)) {
+    const tokens = paragraph.split(/(\s+)/).filter((token) => token.length > 0);
+    let current = '';
+    for (const token of tokens) {
+      if (/^\s+$/.test(token)) {
+        if (current && !current.endsWith(' ')) current += ' ';
+        continue;
+      }
+      const candidate = current ? current + token : token;
+      if (ctx.measureText(candidate).width <= max) {
+        current = candidate;
+        continue;
+      }
+      if (current.trim()) {
+        result.push(current.trimEnd());
+        current = '';
+      }
+      let chunk = '';
+      for (const cluster of thaiClusters(token)) {
+        const next = chunk + cluster;
+        if (ctx.measureText(next).width > max && chunk) {
+          result.push(chunk);
+          chunk = cluster;
+        } else {
+          chunk = next;
+        }
+      }
+      current = chunk;
+    }
+    if (current.trim()) result.push(current.trimEnd());
+  }
+  return result.length ? result : [''];
+}
+
 // Render an array of {text, size, bold, align} lines to a canvas, return ImageData
 function renderLines(lines, width, opts) {
   const lineSpacing = opts.lineSpacing || 1.2;
   // First pass: measure total height
   const dummy = canvasLib.createCanvas(1, 1).getContext('2d');
   let totalH = opts.padTop || 8;
-  const sized = lines.map((l) => {
+  const expanded = [];
+  for (const l of lines) {
+    if (l.wrap && l.text && !l.right && !l.qr && !l.rule) {
+      const size = l.size || 22;
+      dummy.font = `${l.bold ? 'bold ' : ''}${size}px PosThai`;
+      for (const text of wrapMeasuredText(l.text, dummy, l.maxWidth || width - 8)) {
+        expanded.push({ ...l, text });
+      }
+    } else {
+      expanded.push(l);
+    }
+  }
+  const sized = expanded.map((l) => {
     if (l.qr) {
       const qr = qrRenderInfo(l.qr, width, l.sizePx);
       return { ...l, _qr: qr, _h: qr.pixelSize + (l.marginBottom ?? 10) };
+    }
+    if (l.barcode) {
+      const info = barcodeRenderInfo(l.barcode, width, l.heightPx);
+      return { ...l, _bc: info, _h: info.totalHeight + (l.marginBottom ?? 6) };
     }
     const size = l.size || 22;
     dummy.font = `${l.bold ? 'bold ' : ''}${size}px PosThai`;
@@ -168,6 +252,24 @@ function renderLines(lines, width, opts) {
               q.cell
             );
           }
+        }
+      }
+      y += s._h;
+      continue;
+    }
+    if (s.barcode) {
+      const bc = s._bc;
+      const startX = Math.max(0, Math.floor((width - bc.totalWidth) / 2));
+      ctx.fillStyle = 'white';
+      ctx.fillRect(startX, y, bc.totalWidth, bc.barHeight);
+      ctx.fillStyle = 'black';
+      let bx = startX + bc.quietPx;
+      for (const value of bc.values) {
+        const pattern = CODE128_PATTERNS[value];
+        for (let i = 0; i < pattern.length; i++) {
+          const w = Number(pattern[i]) * bc.moduleWidth;
+          if (i % 2 === 0) ctx.fillRect(bx, y, w, bc.barHeight);
+          bx += w;
         }
       }
       y += s._h;
@@ -272,9 +374,9 @@ function buildKitchenBitmap(order, opts = {}) {
 
   for (const section of kitchenSections(order)) {
     lines.push({ text: `-- ${section.label} --`, size: 28, bold: true });
-    for (const { item: it, index } of section.items) {
+    for (const { item: it } of section.items) {
       const variantSuffix = it.variant_name ? ` (${it.variant_name})` : '';
-      lines.push({ text: `${index + 1}. ${it.quantity} x ${it.product_name}${variantSuffix}`, size: 30, bold: true });
+      lines.push({ text: `${it.quantity} x ${it.product_name}${variantSuffix}`, size: 30, bold: true });
       if (Array.isArray(it.options_selected) && it.options_selected.length) {
         lines.push({ text: `   > ${it.options_selected.map((o) => o.value).join(' · ')}`, size: 22 });
       }
@@ -297,16 +399,16 @@ function buildReceiptBitmap(order, opts = {}) {
   const restaurantName = opts.restaurantName || 'POS V2';
 
   const lines = [];
-  lines.push({ text: restaurantName, size: 34, bold: true, align: 'center' });
+  lines.push({ text: restaurantName, size: 34, bold: true, align: 'center', wrap: true, maxWidth: widthPx - 12 });
   lines.push({ text: '--- ใบเสร็จ / RECEIPT ---', size: 20, align: 'center' });
   lines.push({ text: orderQueueLabel(order), right: orderLocationLabel(order), size: 20 });
   lines.push({ text: `Order #${order.id}`, size: 18 });
   lines.push({ text: new Date(order.created_at).toLocaleString('th-TH'), size: 18 });
   lines.push({ rule: '-', size: 20 });
 
-  for (const [index, it] of order.items.entries()) {
+  for (const it of order.items) {
     const variantSuffix = it.variant_name ? ` (${it.variant_name})` : '';
-    lines.push({ text: `${index + 1}. ${it.quantity} x ${it.product_name}${variantSuffix}`, size: 24 });
+    lines.push({ text: `${it.quantity} x ${it.product_name}${variantSuffix}`, size: 24 });
     lines.push({ text: `  [${fulfillmentText(itemFulfillmentType(order, it))}]`, size: 17 });
     const lineTotal = (Number(it.unit_price) * it.quantity).toFixed(2);
     lines.push({ text: `  @${Number(it.unit_price).toFixed(2)}`, right: lineTotal, size: 18 });
@@ -336,6 +438,59 @@ function buildReceiptBitmap(order, opts = {}) {
   return Buffer.concat([INIT, ALIGN_L, rasterFromImageData(img, opts), feedLines(opts), cutCommand(opts, 'full')]);
 }
 
+function buildBarcodeLabelBitmap({
+  barcode,
+  name = '',
+  price,
+  stockQty,
+  barcodeHeightPx,
+} = {}, opts = {}) {
+  ensureFont(opts.fontPath);
+  const widthPx = opts.widthPx || (opts.width >= 48 ? 576 : 384);
+  const lines = [];
+  if (name) {
+    lines.push({ text: name, size: 26, bold: true, align: 'center', wrap: true, maxWidth: widthPx - 12 });
+  }
+  lines.push({ barcode: String(barcode || ''), heightPx: barcodeHeightPx || 80, marginBottom: 4 });
+  const footerParts = [String(barcode || '')];
+  if (price != null) footerParts.push(`฿${Number(price).toFixed(0)}`);
+  if (stockQty != null) footerParts.push(`stock ${Number(stockQty).toFixed(0)}`);
+  lines.push({ text: footerParts.join(' · '), size: 18, align: 'center' });
+
+  const img = renderLines(lines, widthPx, { padTop: 8, padBottom: bottomFeedPx(opts) });
+  return Buffer.concat([INIT, ALIGN_L, rasterFromImageData(img, opts), feedLines(opts), cutCommand(opts, 'partial')]);
+}
+
+function buildQrLabelBitmap({
+  url,
+  tableName = '',
+  tableCode = '',
+  storeName = '',
+  storeLogo = '',
+  note = 'สแกน QR เพื่อสั่งอาหาร',
+  footer = 'ขอบคุณที่ใช้บริการ',
+  qrSizePx,
+} = {}, opts = {}) {
+  ensureFont(opts.fontPath);
+  const widthPx = opts.widthPx || (opts.width >= 48 ? 576 : 384);
+  const lines = [];
+  const header = [storeLogo, storeName].filter(Boolean).join(' ').trim();
+  if (header) {
+    lines.push({ text: header, size: 30, bold: true, align: 'center', wrap: true, maxWidth: widthPx - 12 });
+  }
+  if (note) lines.push({ text: note, size: 20, align: 'center' });
+  lines.push({ rule: '-', size: 20 });
+  if (tableName) lines.push({ text: tableName, size: 38, bold: true, align: 'center' });
+  if (tableCode) lines.push({ text: tableCode, size: 20, align: 'center' });
+  lines.push({ qr: String(url || ''), sizePx: qrSizePx || Math.min(320, widthPx - 48) });
+  if (url) lines.push({ text: url, size: 14, align: 'center' });
+  lines.push({ rule: '-', size: 18 });
+  if (footer) lines.push({ text: footer, size: 20, align: 'center' });
+
+  const img = renderLines(lines, widthPx, { padTop: 8, padBottom: bottomFeedPx(opts) });
+  return Buffer.concat([INIT, ALIGN_L, rasterFromImageData(img, opts), feedLines(opts), cutCommand(opts, 'partial')]);
+}
+
 function buildTestBitmap(opts = {}) {
   ensureFont(opts.fontPath);
   const widthPx = opts.widthPx || 384;
@@ -354,6 +509,8 @@ function buildTestBitmap(opts = {}) {
 module.exports = {
   buildKitchenBitmap,
   buildReceiptBitmap,
+  buildQrLabelBitmap,
+  buildBarcodeLabelBitmap,
   buildTestBitmap,
   rasterFromImageData,
   rawBitmapFromImageData,

@@ -3,6 +3,7 @@ const db = require('../db');
 const { authRequired, requireRole } = require('../middleware/auth');
 const { loadOrder, queueKitchenStationPrints } = require('./orders');
 const { loadSettings } = require('./settings');
+const { parseStoreIds } = require('../lib/storeScope');
 const printer = require('../printer');
 const bitmap = require('../printer-bitmap');
 const tspl = require('../printer-tspl');
@@ -19,6 +20,42 @@ function clampInt(value, fallback, min, max) {
   const n = parseInt(value, 10);
   const picked = Number.isFinite(n) ? n : fallback;
   return Math.min(max, Math.max(min, picked));
+}
+
+function canPrintReceipt(req) {
+  return ['admin', 'staff', 'super_admin'].includes(req.user?.role);
+}
+
+function enforceReceiptPrintRole(req, res, type) {
+  if (type !== 'receipt' || canPrintReceipt(req)) return true;
+  res.status(403).json({ error: 'receipt printing requires staff/admin' });
+  return false;
+}
+
+function orderStoreId(order) {
+  const n = Number(order?.store_id || 1);
+  return Number.isInteger(n) && n > 0 ? n : 1;
+}
+
+function canAccessOrderStore(req, order) {
+  if (req.user?.role === 'super_admin') return true;
+  const storeId = orderStoreId(order);
+  const allowed = parseStoreIds(req.user?.allowed_store_ids);
+  const fallback = Number(req.user?.store_id || 1);
+  const effectiveAllowed = allowed.length
+    ? allowed
+    : [Number.isInteger(fallback) && fallback > 0 ? fallback : 1];
+  return effectiveAllowed.includes(storeId);
+}
+
+function enforceOrderStoreAccess(req, res, order) {
+  if (canAccessOrderStore(req, order)) return true;
+  res.status(403).json({ error: 'store access forbidden' });
+  return false;
+}
+
+async function loadOrderSettings(order) {
+  return loadSettings(orderStoreId(order));
 }
 
 function stationPayload(body = {}, key) {
@@ -83,8 +120,10 @@ router.get('/config', authRequired, async (_req, res) => {
   }
   res.json({
     enabled: cfg.enabled,
+    transport: cfg.transport,
     host: cfg.host,
     port: cfg.port,
+    windows_printer_name: cfg.windowsPrinterName,
     printer_key: cfg.printerKey,
     timeout_ms: cfg.timeout,
     thai_cp: cfg.thaiCp,
@@ -107,6 +146,14 @@ router.get('/config', authRequired, async (_req, res) => {
     status,
     stations,
   });
+});
+
+router.get('/windows-printers', authRequired, requireRole('admin', 'staff'), async (_req, res) => {
+  try {
+    res.json(await printer.listWindowsPrinters());
+  } catch (e) {
+    res.status(500).json({ error: e.message, code: e.code || 'WINDOWS_PRINTER_LIST_FAILED' });
+  }
 });
 
 router.get('/stations', authRequired, requireRole('admin', 'staff'), async (_req, res) => {
@@ -206,6 +253,10 @@ router.post('/mobile-claim', authRequired, requireRole('admin', 'staff', 'kitche
   if (!orderId || !['kitchen', 'receipt'].includes(type)) {
     return res.status(400).json({ error: 'order_id and type required' });
   }
+  if (!enforceReceiptPrintRole(req, res, type)) return;
+  const order = await loadOrder(orderId);
+  if (!order) return res.status(404).json({ error: 'order not found' });
+  if (!enforceOrderStoreAccess(req, res, order)) return;
 
   const client = await require('../db').getClient();
   try {
@@ -288,13 +339,91 @@ router.post('/test', authRequired, requireRole('admin', 'staff'), async (req, re
   res.status(202).json({ queued: true, ...job });
 });
 
+// Enqueue a QR-label print so staff can hand a paper QR to customers
+// who can't scan from the screen. Body: { url, table_name, table_code,
+// store_name, store_logo, note, footer, copies }
+router.post('/qr', authRequired, requireRole('admin', 'staff'), async (req, res) => {
+  const body = req.body || {};
+  const url = String(body.url || '').trim();
+  if (!url || !/^https?:\/\//i.test(url)) {
+    return res.status(400).json({ error: 'url (http/https) required' });
+  }
+  const copies = Math.max(1, Math.min(8, parseInt(body.copies, 10) || 1));
+  const force = req.query.force === '1' || body.force === true;
+  const opts = {
+    url,
+    tableName: String(body.table_name || body.tableName || '').slice(0, 80),
+    tableCode: String(body.table_code || body.tableCode || '').slice(0, 40),
+    storeName: String(body.store_name || body.storeName || '').slice(0, 80),
+    storeLogo: String(body.store_logo || body.storeLogo || '').slice(0, 8),
+    note: String(body.note || 'สแกน QR เพื่อสั่งอาหาร').slice(0, 80),
+    footer: String(body.footer || 'ขอบคุณที่ใช้บริการ').slice(0, 80),
+    qrSize: Math.max(3, Math.min(8, parseInt(body.qr_size, 10) || 8)),
+  };
+  const jobs = [];
+  for (let i = 0; i < copies; i += 1) {
+    // Each copy is queued separately so they print sequentially and a
+    // single failure doesn't block the rest.
+    const job = await printer.queueQrLabel(opts, { createdBy: req.user.sub, force: force || i > 0 });
+    jobs.push(job);
+  }
+  res.status(202).json({ queued: true, copies, jobs, ...(jobs[0] || {}) });
+});
+
+// Enqueue a barcode-label print for a product. Optional ?station_key=
+// or body.station_key selects a specific thermal printer (otherwise the
+// default printer is used). Body: { copies, barcode_height_px }
+router.post('/barcode/:productId', authRequired, requireRole('admin', 'staff'), async (req, res) => {
+  const productId = parseInt(req.params.productId, 10);
+  if (!Number.isInteger(productId) || productId <= 0) {
+    return res.status(400).json({ error: 'invalid product id' });
+  }
+  const storeId = require('../lib/storeScope').resolveStoreId(req);
+  const { rows } = await require('../db').query(
+    `SELECT id, name, price, barcode, stock_qty
+       FROM products WHERE id = $1 AND store_id = $2`,
+    [productId, storeId]
+  );
+  const product = rows[0];
+  if (!product) return res.status(404).json({ error: 'not found' });
+  if (!product.barcode) return res.status(400).json({ error: 'product has no barcode' });
+  const body = req.body || {};
+  const copies = Math.max(1, Math.min(8, parseInt(body.copies, 10) || 1));
+  const force = req.query.force === '1' || body.force === true;
+  const stationKey = normalizeStationKey(req.query.station_key || body.station_key);
+  const station = stationKey ? await loadStation(stationKey) : null;
+  if (stationKey && !station) return res.status(404).json({ error: 'station not found' });
+  const opts = {
+    barcode: product.barcode,
+    name: product.name,
+    price: product.price != null ? Number(product.price) : null,
+    stockQty: product.stock_qty != null ? Number(product.stock_qty) : null,
+    barcodeHeightPx: Math.max(40, Math.min(140, parseInt(body.barcode_height_px, 10) || 80)),
+  };
+  const jobs = [];
+  for (let i = 0; i < copies; i += 1) {
+    const job = await printer.queueBarcodeLabel(opts, {
+      createdBy: req.user.sub,
+      force: force || i > 0,
+      station,
+    });
+    jobs.push(job);
+  }
+  res.status(202).json({ queued: true, copies, station_key: stationKey || null, jobs, ...(jobs[0] || {}) });
+});
+
 // Enqueue an order print
 router.post('/order/:id', authRequired, requireRole('admin', 'staff', 'kitchen'), async (req, res) => {
   const order = await loadOrder(req.params.id);
   if (!order) return res.status(404).json({ error: 'order not found' });
+  if (!enforceOrderStoreAccess(req, res, order)) return;
   const type = (req.query.type || req.body?.type || 'kitchen').toLowerCase();
+  if (!['kitchen', 'receipt'].includes(type)) {
+    return res.status(400).json({ error: `unknown type "${type}"` });
+  }
+  if (!enforceReceiptPrintRole(req, res, type)) return;
   const force = req.query.force === '1' || req.body?.force === true;
-  const settings = await loadSettings();
+  const settings = await loadOrderSettings(order);
   const opts = { createdBy: req.user.sub, force };
   let job;
   if (type === 'receipt') {
@@ -321,7 +450,6 @@ router.post('/order/:id', authRequired, requireRole('admin', 'staff', 'kitchen')
       job = await queueKitchenStationPrints(order, opts);
     }
   }
-  else return res.status(400).json({ error: `unknown type "${type}"` });
   const jobs = Array.isArray(job) ? job : [job];
   res.status(202).json({ queued: true, type, order_id: order.id, jobs, ...(jobs[0] || {}) });
 });
@@ -433,11 +561,13 @@ function cfgFromQuery(req) {
 router.get('/payload/order/:id', authRequired, requireRole('admin', 'staff', 'kitchen'), async (req, res) => {
   const order = await loadOrder(req.params.id);
   if (!order) return res.status(404).json({ error: 'order not found' });
+  if (!enforceOrderStoreAccess(req, res, order)) return;
   const type = (req.query.type || 'kitchen').toLowerCase();
   if (!['kitchen', 'receipt'].includes(type)) {
     return res.status(400).json({ error: `unknown type "${type}"` });
   }
-  const settings = await loadSettings();
+  if (!enforceReceiptPrintRole(req, res, type)) return;
+  const settings = await loadOrderSettings(order);
   const cfg = {
     ...cfgFromQuery(req),
     restaurantName: settings.name,

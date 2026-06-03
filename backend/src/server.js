@@ -26,6 +26,8 @@ const pushRoutes = require('./routes/push');
 const settingsRoutes = require('./routes/settings');
 const paymentRoutes = require('./routes/payments');
 const accountingRoutes = require('./routes/accounting');
+const storeRoutes = require('./routes/stores');
+const userRoutes = require('./routes/users');
 
 const app = express();
 const corsOrigins = (process.env.CORS_ORIGINS || '').split(',').map((s) => s.trim()).filter(Boolean);
@@ -110,6 +112,8 @@ app.use('/api/push', pushRoutes);
 app.use('/api/settings', settingsRoutes.router);
 app.use('/api/payments', paymentRoutes.router);
 app.use('/api/accounting', accountingRoutes.router);
+app.use('/api/stores', storeRoutes);
+app.use('/api/users', userRoutes);
 
 // Centralized error handler
 app.use((err, _req, res, _next) => {

@@ -15,6 +15,7 @@ const nextConfig = {
     return [
       { source: '/api/:path*',     destination: `${BACKEND_INTERNAL}/api/:path*` },
       { source: '/uploads/:path*', destination: `${BACKEND_INTERNAL}/uploads/:path*` },
+      { source: '/socket.io',      destination: `${BACKEND_INTERNAL}/socket.io` },
       { source: '/socket.io/:path*', destination: `${BACKEND_INTERNAL}/socket.io/:path*` },
     ];
   },

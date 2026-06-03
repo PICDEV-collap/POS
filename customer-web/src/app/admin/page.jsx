@@ -2,13 +2,24 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
-import { getAuth, authFetch, clearAuth } from '@/lib/auth';
+import {
+  getAuth,
+  authFetch,
+  clearAuth,
+  getActiveStoreId,
+  setActiveStoreId as persistActiveStoreId,
+  activeStoreHeaders,
+} from '@/lib/auth';
 import { apiBase } from '@/lib/api';
 import { useRealtimeRecovery } from '@/lib/realtimeRecovery';
+import { ensureSocketConnected } from '@/lib/socket';
 import { storageGet, storageSet } from '@/lib/browser';
+import { openQrPrintWindow } from '@/lib/printQr';
 
 const TABS = [
   { id: 'dashboard', label: '📊 ภาพรวม' },
+  { id: 'stores',   label: '🏬 ร้าน',     adminOnly: true },
+  { id: 'users',    label: '👥 ผู้ใช้',    adminOnly: true },
   { id: 'orders',    label: '📋 ออเดอร์' },
   { id: 'accounting',label: '📒 บัญชี',    adminOnly: true },
   { id: 'products',  label: '🍽️ เมนู',     adminOnly: true },
@@ -58,49 +69,83 @@ function lanWebRootFromDiscovery(info) {
   return lanIp ? `http://${lanIp}:3000` : '';
 }
 
+function urlHost(value) {
+  try {
+    return new URL(trimOrderRoot(value)).host.toLowerCase();
+  } catch {
+    return '';
+  }
+}
+
+function isStaleQrBase(stored, currentLanRoot, currentPublicRoot) {
+  if (!stored) return false;
+  if (isLanLikeUrl(stored) && currentLanRoot) {
+    return urlHost(stored) !== urlHost(currentLanRoot);
+  }
+  return !isLanLikeUrl(stored) && !!currentPublicRoot && isLanLikeUrl(currentPublicRoot);
+}
+
 export default function AdminPage() {
   const router = useRouter();
   const [auth, setAuthState] = useState(null);
   const [tab, setTab] = useState('dashboard');
+  const [activeStoreId, setActiveStoreIdState] = useState(null);
+
+  const changeActiveStore = useCallback((storeId) => {
+    const id = Number(storeId);
+    if (!Number.isInteger(id) || id <= 0) return;
+    persistActiveStoreId(id);
+    setActiveStoreIdState(id);
+  }, []);
 
   useEffect(() => {
     const a = getAuth();
     if (!a) { router.replace('/login?next=/admin'); return; }
     if (a.user.role === 'kitchen') { router.replace('/kitchen'); return; }
+    if (a.user.role === 'staff') { router.replace('/staff'); return; }
+    if (!['admin', 'super_admin'].includes(a.user.role)) { clearAuth(); router.replace('/login?next=/admin'); return; }
+    setActiveStoreIdState(getActiveStoreId(a.user?.store_id || 1));
     setAuthState(a);
   }, [router]);
 
   function logout() { clearAuth(); router.replace('/login'); }
 
   if (!auth) return null;
-  const isAdmin = auth.user.role === 'admin';
+  const isAdmin = auth.user.role === 'admin' || auth.user.role === 'super_admin';
   const visibleTabs = TABS.filter((t) => isAdmin || !t.adminOnly);
   const activeTab = visibleTabs.find((t) => t.id === tab) ? tab : 'dashboard';
+  const storeScopeKey = activeStoreId || auth.user.store_id || 1;
+  function manageStore(store) {
+    changeActiveStore(store.id);
+    setTab('dashboard');
+  }
 
   return (
-    <main style={{ minHeight: 'var(--app-height, 100vh)', background: '#f0f0f5', fontFamily: 'system-ui, sans-serif' }}>
-      <header style={{
-        background: 'linear-gradient(135deg,#1a1a2e,#16213e)', color: 'white',
-        padding: '14px 18px', display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-        position: 'sticky', top: 0, zIndex: 50, boxShadow: '0 2px 12px rgba(0,0,0,.3)'
-      }}>
-        <div>
+    <main className="pos-app-shell admin-shell admin-page-shell">
+      <header className="pos-topbar admin-header admin-topbar">
+        <div style={{ minWidth: 0 }}>
           <div style={{ fontWeight: 800, fontSize: 18 }}>
             {isAdmin ? '⚙️ Admin Panel' : '👤 หน้าพนักงาน'}
           </div>
-          <div style={{ opacity: .55, fontSize: 12 }}>
+          <div style={{ opacity: .55, fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             {auth.user.full_name} · {auth.user.role}
           </div>
         </div>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <a href="/staff" style={navLinkStyle}>🛒 รับออเดอร์</a>
-          <a href="/kitchen" style={navLinkStyle}>🍳 ครัว</a>
+        <div className="admin-actions admin-header-actions">
+          {isAdmin && (
+            <StoreSwitcher
+              currentUser={auth.user}
+              activeStoreId={storeScopeKey}
+              onChange={changeActiveStore}
+            />
+          )}
           <button onClick={logout} style={{ ...navLinkStyle, background: 'rgba(239,71,111,.15)', color: '#ef476f', borderColor: 'rgba(239,71,111,.25)', border: '1px solid', cursor: 'pointer' }}>🚪 ออก</button>
         </div>
       </header>
 
-      <nav style={{ background: 'white', padding: '8px 12px', display: 'flex', gap: 6,
-                    overflowX: 'auto', boxShadow: '0 1px 4px rgba(0,0,0,.08)',
+      <nav className="admin-tab-bar" style={{ background: 'white', padding: '8px 12px', display: 'flex', gap: 6,
+                    overflowX: 'auto', WebkitOverflowScrolling: 'touch',
+                    boxShadow: '0 1px 4px rgba(0,0,0,.08)',
                     position: 'sticky', top: 56, zIndex: 40 }}>
         {visibleTabs.map((t) => (
           <button key={t.id} onClick={() => setTab(t.id)}
@@ -113,16 +158,24 @@ export default function AdminPage() {
         ))}
       </nav>
 
-      <div style={{ padding: 16, maxWidth: 1280, margin: '0 auto' }}>
-        {activeTab === 'dashboard'  && <DashboardTab />}
-        {activeTab === 'orders'     && <OrdersTab />}
-        {activeTab === 'accounting' && isAdmin && <AccountingTab />}
-        {activeTab === 'products'   && isAdmin && <ProductsTab />}
-        {activeTab === 'categories' && isAdmin && <CategoriesTab />}
-        {activeTab === 'tables'     && isAdmin && <TablesTab />}
-        {activeTab === 'qrcodes'    && <QRCodesTab />}
-        {activeTab === 'printer'    && isAdmin && <PrinterTab />}
-        {activeTab === 'printqueue' && <PrintQueueTab isAdmin={isAdmin} />}
+      <div className="admin-content">
+        {activeTab === 'dashboard'  && <DashboardTab key={`dashboard-${storeScopeKey}`} />}
+        {activeTab === 'stores'     && isAdmin && (
+          <StoresTab
+            currentUser={auth.user}
+            activeStoreId={storeScopeKey}
+            onManageStore={manageStore}
+          />
+        )}
+        {activeTab === 'users'      && isAdmin && <UsersTab key={`users-${storeScopeKey}`} currentUser={auth.user} />}
+        {activeTab === 'orders'     && <OrdersTab key={`orders-${storeScopeKey}`} />}
+        {activeTab === 'accounting' && isAdmin && <AccountingTab key={`accounting-${storeScopeKey}`} />}
+        {activeTab === 'products'   && isAdmin && <ProductsTab key={`products-${storeScopeKey}`} />}
+        {activeTab === 'categories' && isAdmin && <CategoriesTab key={`categories-${storeScopeKey}`} />}
+        {activeTab === 'tables'     && isAdmin && <TablesTab key={`tables-${storeScopeKey}`} />}
+        {activeTab === 'qrcodes'    && <QRCodesTab key={`qrcodes-${storeScopeKey}`} />}
+        {activeTab === 'printer'    && isAdmin && <PrinterTab key={`printer-${storeScopeKey}`} />}
+        {activeTab === 'printqueue' && <PrintQueueTab key={`printqueue-${storeScopeKey}`} isAdmin={isAdmin} />}
       </div>
     </main>
   );
@@ -144,6 +197,65 @@ const btnDanger = { background: 'rgba(239,71,111,.15)', color: '#ef476f', border
                     borderRadius: 8, padding: '8px 14px', fontWeight: 600, fontSize: 13, cursor: 'pointer' };
 const inputStyle = { width: '100%', padding: '8px 12px', borderRadius: 8,
                      border: '1.5px solid #e5e5ea', fontSize: 14, outline: 'none', boxSizing: 'border-box' };
+
+// ─────────────────────────────────────────────────────────────────────
+function StoreSwitcher({ currentUser, activeStoreId, onChange }) {
+  const [stores, setStores] = useState([]);
+  const [error, setError] = useState(null);
+
+  const reload = useCallback(async () => {
+    try {
+      const list = await authFetch('/api/stores');
+      setStores(Array.isArray(list) ? list : []);
+      setError(null);
+    } catch (e) {
+      setError(e.message);
+    }
+  }, []);
+
+  useEffect(() => { reload(); }, [reload]);
+
+  useEffect(() => {
+    if (!stores.length) return;
+    const current = Number(activeStoreId);
+    if (stores.some((s) => Number(s.id) === current)) return;
+    const fallback = stores.find((s) => Number(s.id) === Number(currentUser?.store_id)) || stores[0];
+    if (fallback) onChange(fallback.id);
+  }, [stores, activeStoreId, currentUser?.store_id, onChange]);
+
+  if (error) {
+    return <span style={{ color: '#ffd166', fontSize: 12 }}>ร้าน: {error}</span>;
+  }
+  if (!stores.length) return null;
+
+  return (
+    <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 700 }}>
+      <span style={{ opacity: .75 }}>ร้านที่จัดการ</span>
+      <select
+        value={String(activeStoreId || stores[0]?.id || '')}
+        onChange={(e) => onChange(e.target.value)}
+        style={{
+          minWidth: 150,
+          maxWidth: 220,
+          background: 'rgba(255,255,255,.12)',
+          color: 'white',
+          border: '1px solid rgba(255,255,255,.25)',
+          borderRadius: 8,
+          padding: '7px 9px',
+          fontSize: 12,
+          fontWeight: 700,
+          outline: 'none',
+        }}
+      >
+        {stores.map((s) => (
+          <option key={s.id} value={s.id} style={{ color: '#1a1a2e' }}>
+            #{s.id} {s.name}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
 
 // ─────────────────────────────────────────────────────────────────────
 function DashboardTab() {
@@ -194,9 +306,535 @@ function StatCard({ label, value, icon, highlight }) {
 }
 
 // ─────────────────────────────────────────────────────────────────────
+function StoresTab({ currentUser, activeStoreId, onManageStore }) {
+  const [stores, setStores] = useState([]);
+  const [editing, setEditing] = useState(null);
+  const [error, setError] = useState(null);
+  const [notice, setNotice] = useState(null);
+  const canCreate = currentUser?.role === 'super_admin' || currentUser?.role === 'admin';
+
+  const reload = useCallback(async () => {
+    try {
+      const list = await authFetch('/api/stores');
+      setStores(list);
+      setError(null);
+      return list;
+    } catch (e) { setError(e.message); }
+    return [];
+  }, []);
+
+  useEffect(() => { reload(); }, [reload]);
+
+  async function save(form) {
+    try {
+      let saved;
+      if (form.id) {
+        saved = await authFetch(`/api/stores/${form.id}`, {
+          method: 'PUT',
+          headers: { 'X-POS-Store-ID': String(form.id) },
+          body: JSON.stringify(form),
+        });
+      } else {
+        saved = await authFetch('/api/stores', { method: 'POST', body: JSON.stringify(form) });
+      }
+      setEditing(null);
+      if (saved?.id && !form.id) onManageStore?.(saved);
+      setNotice(form.id ? 'บันทึกร้านแล้ว' : 'เพิ่มร้านและเตรียมโต๊ะ/QR เริ่มต้นแล้ว');
+      reload();
+    } catch (e) { setError(e.message); }
+  }
+
+  async function deleteStore(store) {
+    if (Number(store.id) === 1 || store.code === 'default') {
+      setError('ไม่สามารถลบร้านหลักได้');
+      return;
+    }
+    const ok = confirm(`ลบร้าน "${store.name}"?\n\nระบบจะลบเฉพาะร้านที่ยังไม่มีประวัติขาย/สต๊อก/บัญชีเท่านั้น และจะลบโต๊ะ QR หมวด และเมนูของร้านนี้ด้วย`);
+    if (!ok) return;
+    setError(null);
+    setNotice(null);
+    try {
+      await authFetch(`/api/stores/${store.id}`, {
+        method: 'DELETE',
+        headers: { 'X-POS-Store-ID': String(store.id) },
+      });
+      const list = await reload();
+      if (Number(activeStoreId) === Number(store.id)) {
+        const next = list.find((s) => s.is_active) || list[0];
+        if (next) onManageStore?.(next);
+      }
+      setNotice(`ลบร้าน "${store.name}" แล้ว`);
+    } catch (e) {
+      setError(e.message);
+    }
+  }
+
+  return (
+    <div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+        <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800 }}>ร้านในระบบ ({stores.length})</h2>
+        {canCreate && <button onClick={() => setEditing({ is_active: true, currency: '฿', timezone: 'Asia/Bangkok' })} style={btnPrimary}>+ เพิ่มร้าน</button>}
+      </div>
+      {error && <p style={{ color: '#c00' }}>{error}</p>}
+      {notice && <p style={{ color: '#05795c', fontWeight: 700 }}>{notice}</p>}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 12 }}>
+        {stores.map((s) => {
+          const isCurrent = Number(s.id) === Number(activeStoreId);
+          const isDefault = Number(s.id) === 1 || s.code === 'default';
+          return (
+          <div key={s.id} style={{
+            ...card,
+            border: isCurrent ? '2px solid #1a1a2e' : '2px solid transparent',
+            boxShadow: isCurrent ? '0 4px 16px rgba(26,26,46,.14)' : card.boxShadow,
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+              <div>
+                <div style={{ fontSize: 12, color: '#999', fontWeight: 700 }}>{s.code} · #{s.id}</div>
+                <div style={{ fontSize: 18, fontWeight: 800, color: '#1a1a2e', marginTop: 3 }}>{s.logo || '🍽️'} {s.name}</div>
+                <div style={{ fontSize: 12, color: '#777', marginTop: 4 }}>{s.public_base_url || 'LAN/local only'}</div>
+              </div>
+              <span style={{
+                height: 26, padding: '5px 10px', borderRadius: 999, fontSize: 12, fontWeight: 800,
+                background: s.is_active ? '#ecfff8' : '#fff0f0',
+                color: s.is_active ? '#05795c' : '#b4232e',
+              }}>{s.is_active ? 'active' : 'disabled'}</span>
+            </div>
+            <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+              <button
+                onClick={() => onManageStore?.(s)}
+                style={isCurrent ? btnPrimary : btnSecondary}
+              >
+                {isCurrent ? 'กำลังจัดการร้านนี้' : 'จัดการร้านนี้'}
+              </button>
+              <button onClick={() => setEditing(s)} style={btnSecondary}>แก้ไข</button>
+              <button
+                onClick={() => deleteStore(s)}
+                disabled={isDefault}
+                style={{ ...btnDanger, opacity: isDefault ? .45 : 1 }}
+                title={isDefault ? 'ร้านหลักลบไม่ได้' : 'ลบร้านนี้'}
+              >
+                ลบ
+              </button>
+            </div>
+          </div>
+          );
+        })}
+      </div>
+      {editing && (
+        <StoreModal
+          initial={editing}
+          canEditCode={canCreate}
+          onClose={() => setEditing(null)}
+          onSave={save}
+        />
+      )}
+    </div>
+  );
+}
+
+function StoreModal({ initial, canEditCode, onClose, onSave }) {
+  const [form, setForm] = useState({
+    id: initial.id,
+    name: initial.name || '',
+    code: initial.code || '',
+    slug: initial.slug || '',
+    logo: initial.logo || '',
+    currency: initial.currency || '฿',
+    public_base_url: initial.public_base_url || '',
+    timezone: initial.timezone || 'Asia/Bangkok',
+    is_active: initial.is_active !== false,
+  });
+  function set(k, v) { setForm((f) => ({ ...f, [k]: v })); }
+  return (
+    <Modal title={form.id ? 'แก้ไขร้าน' : 'เพิ่มร้าน'} onClose={onClose}>
+      <Field label="ชื่อร้าน"><input style={inputStyle} value={form.name} onChange={(e) => set('name', e.target.value)} /></Field>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+        <Field label="รหัสร้าน"><input style={inputStyle} disabled={!canEditCode || !!form.id} value={form.code} onChange={(e) => set('code', e.target.value)} /></Field>
+        <Field label="Slug"><input style={inputStyle} disabled={!canEditCode || !!form.id} value={form.slug} onChange={(e) => set('slug', e.target.value)} /></Field>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: '90px 1fr', gap: 10 }}>
+        <Field label="โลโก้"><input style={inputStyle} value={form.logo} onChange={(e) => set('logo', e.target.value)} /></Field>
+        <Field label="Public URL"><input style={inputStyle} value={form.public_base_url} onChange={(e) => set('public_base_url', e.target.value)} placeholder="https://shop.example.com" /></Field>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: '90px 1fr', gap: 10 }}>
+        <Field label="สกุลเงิน"><input style={inputStyle} value={form.currency} onChange={(e) => set('currency', e.target.value)} /></Field>
+        <Field label="Timezone"><input style={inputStyle} value={form.timezone} onChange={(e) => set('timezone', e.target.value)} /></Field>
+      </div>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12, fontSize: 13 }}>
+        <input type="checkbox" checked={!!form.is_active} onChange={(e) => set('is_active', e.target.checked)} />
+        เปิดใช้งานร้านนี้
+      </label>
+      <button onClick={() => onSave(form)} style={{ ...btnPrimary, width: '100%' }}>บันทึก</button>
+    </Modal>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────
+const ROLE_LABELS = {
+  super_admin: 'Server admin',
+  admin: 'Store admin',
+  staff: 'Staff',
+  kitchen: 'Kitchen',
+};
+
+function UsersTab({ currentUser }) {
+  const [users, setUsers] = useState([]);
+  const [stores, setStores] = useState([]);
+  const [editing, setEditing] = useState(null);
+  const [error, setError] = useState(null);
+  const [notice, setNotice] = useState(null);
+  const isSuperAdmin = currentUser?.role === 'super_admin';
+
+  const reload = useCallback(async () => {
+    try {
+      const [userList, storeList] = await Promise.all([
+        authFetch('/api/users'),
+        authFetch('/api/stores'),
+      ]);
+      setUsers(Array.isArray(userList) ? userList : []);
+      setStores(Array.isArray(storeList) ? storeList : []);
+      setError(null);
+    } catch (e) {
+      setError(e.message);
+    }
+  }, []);
+
+  useEffect(() => { reload(); }, [reload]);
+
+  function storeLabel(id) {
+    const store = stores.find((s) => Number(s.id) === Number(id));
+    return store ? `${store.logo || 'ร้าน'} ${store.name}` : `ร้าน #${id}`;
+  }
+
+  function storeListLabel(ids = []) {
+    const list = Array.isArray(ids) ? ids : [];
+    if (!list.length) return '-';
+    return list.map(storeLabel).join(' · ');
+  }
+
+  function newUser() {
+    const firstStore = stores.find((s) => s.is_active) || stores[0];
+    setEditing({
+      role: 'staff',
+      is_active: true,
+      store_id: firstStore?.id || 1,
+      allowed_store_ids: firstStore?.id ? [firstStore.id] : [1],
+      permissions: [],
+    });
+  }
+
+  async function save(form) {
+    setError(null);
+    setNotice(null);
+    try {
+      const body = { ...form };
+      if (form.id && !body.password) delete body.password;
+      const saved = await authFetch(form.id ? `/api/users/${form.id}` : '/api/users', {
+        method: form.id ? 'PUT' : 'POST',
+        body: JSON.stringify(body),
+      });
+      setEditing(null);
+      setNotice(form.id ? `บันทึกผู้ใช้ ${saved.username} แล้ว` : `สร้างผู้ใช้ ${saved.username} แล้ว`);
+      await reload();
+    } catch (e) {
+      setError(e.message);
+    }
+  }
+
+  async function toggleActive(user) {
+    const action = user.is_active ? 'ปิดใช้งาน' : 'เปิดใช้งาน';
+    if (!confirm(`${action}บัญชี "${user.username}"?`)) return;
+    await save({ ...user, password: '', is_active: !user.is_active });
+  }
+
+  return (
+    <div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+        <div>
+          <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800 }}>ผู้ใช้และสิทธิ์ ({users.length})</h2>
+          <div style={{ color: '#777', fontSize: 12, marginTop: 3 }}>
+            {isSuperAdmin ? 'จัดการได้ทุก role และทุกร้าน' : 'จัดการ staff/kitchen เฉพาะร้านที่บัญชีนี้ได้รับสิทธิ์'}
+          </div>
+        </div>
+        <button onClick={newUser} style={btnPrimary}>+ เพิ่มผู้ใช้</button>
+      </div>
+      {error && <p style={{ color: '#c00' }}>{error}</p>}
+      {notice && <p style={{ color: '#05795c', fontWeight: 700 }}>{notice}</p>}
+      <div style={{ ...card, padding: 0, overflowX: 'auto' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+          <thead style={{ background: '#f8f8fa', color: '#666' }}>
+            <tr>
+              <th style={thStyle}>ผู้ใช้</th>
+              <th style={thStyle}>Role</th>
+              <th style={thStyle}>ร้านหลัก</th>
+              <th style={thStyle}>ร้านที่เข้าได้</th>
+              <th style={thStyle}>สิทธิ์เพิ่ม</th>
+              <th style={thStyle}>สถานะ</th>
+              <th style={thStyle}></th>
+            </tr>
+          </thead>
+          <tbody>
+            {users.map((u) => (
+              <tr key={u.id} style={{ borderTop: '1px solid #eee' }}>
+                <td style={tdStyle}>
+                  <div style={{ fontWeight: 800, color: '#1a1a2e' }}>{u.username}</div>
+                  <div style={{ color: '#888', fontSize: 12 }}>{u.full_name || '-'}</div>
+                </td>
+                <td style={tdStyle}>{ROLE_LABELS[u.role] || u.role}</td>
+                <td style={tdStyle}>{storeLabel(u.store_id)}</td>
+                <td style={tdStyle}>{storeListLabel(u.allowed_store_ids)}</td>
+                <td style={tdStyle}>{(u.permissions || []).join(', ') || '-'}</td>
+                <td style={tdStyle}>
+                  <span style={{
+                    padding: '4px 9px', borderRadius: 999, fontWeight: 800, fontSize: 12,
+                    background: u.is_active ? '#ecfff8' : '#fff0f0',
+                    color: u.is_active ? '#05795c' : '#b4232e',
+                  }}>
+                    {u.is_active ? 'active' : 'disabled'}
+                  </span>
+                </td>
+                <td style={{ ...tdStyle, textAlign: 'right', whiteSpace: 'nowrap' }}>
+                  <button onClick={() => setEditing(u)} style={{ ...btnSecondary, marginRight: 6 }}>แก้ไข</button>
+                  <button onClick={() => toggleActive(u)} style={u.is_active ? btnDanger : btnSecondary}>
+                    {u.is_active ? 'ปิด' : 'เปิด'}
+                  </button>
+                </td>
+              </tr>
+            ))}
+            {users.length === 0 && (
+              <tr>
+                <td colSpan={7} style={{ padding: 18, textAlign: 'center', color: '#888' }}>
+                  ยังไม่มีผู้ใช้ที่จัดการได้
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+      {editing && (
+        <UserModal
+          initial={editing}
+          stores={stores}
+          currentUser={currentUser}
+          onClose={() => setEditing(null)}
+          onSave={save}
+        />
+      )}
+    </div>
+  );
+}
+
+function UserModal({ initial, stores, currentUser, onClose, onSave }) {
+  const isSuperAdmin = currentUser?.role === 'super_admin';
+  const firstStore = stores.find((s) => s.is_active) || stores[0] || { id: 1, name: 'ร้านหลัก' };
+  const [form, setForm] = useState({
+    id: initial.id,
+    username: initial.username || '',
+    password: '',
+    full_name: initial.full_name || '',
+    role: initial.role || 'staff',
+    store_id: initial.store_id || firstStore.id,
+    allowed_store_ids: (initial.allowed_store_ids?.length ? initial.allowed_store_ids : [initial.store_id || firstStore.id]).map(Number),
+    permissions: initial.permissions || [],
+    is_active: initial.is_active !== false,
+  });
+  const [showPassword, setShowPassword] = useState(false);
+  const [storesDropdownOpen, setStoresDropdownOpen] = useState(false);
+  const roleOptions = isSuperAdmin ? ['super_admin', 'admin', 'staff', 'kitchen'] : ['staff', 'kitchen'];
+  const allowedStoreIds = (form.allowed_store_ids || []).map(Number);
+  const allowedStores = stores.filter((s) => allowedStoreIds.includes(Number(s.id)));
+  const allowedStoreLabel = allowedStores.length
+    ? allowedStores.map((s) => `${s.logo || 'ร้าน'} ${s.name}`).join(' · ')
+    : 'เลือกร้านที่เข้าได้';
+
+  function set(k, v) { setForm((f) => ({ ...f, [k]: v })); }
+  function toggleStore(id) {
+    const storeId = Number(id);
+    setForm((f) => {
+      const current = new Set((f.allowed_store_ids || []).map(Number));
+      if (current.has(storeId)) current.delete(storeId);
+      else current.add(storeId);
+      const allowed = Array.from(current).sort((a, b) => a - b);
+      return {
+        ...f,
+        allowed_store_ids: allowed,
+        store_id: allowed.includes(Number(f.store_id)) ? f.store_id : (allowed[0] || ''),
+      };
+    });
+  }
+  function togglePermission(permission) {
+    setForm((f) => {
+      const current = new Set(f.permissions || []);
+      if (current.has(permission)) current.delete(permission);
+      else current.add(permission);
+      return { ...f, permissions: Array.from(current) };
+    });
+  }
+  function save() {
+    const allowed = (form.allowed_store_ids || []).map(Number).filter(Boolean);
+    if (!form.username.trim()) return alert('กรุณากรอก username');
+    if (!form.id && !form.password) return alert('กรุณากรอกรหัสผ่านสำหรับผู้ใช้ใหม่');
+    if (form.password && form.password.length < 8) return alert('รหัสผ่านต้องอย่างน้อย 8 ตัวอักษร');
+    if (allowed.length === 0) return alert('กรุณาเลือกร้านที่เข้าได้');
+    if (!allowed.includes(Number(form.store_id))) return alert('ร้านหลักต้องอยู่ในร้านที่เข้าได้');
+    onSave({
+      ...form,
+      username: form.username.trim(),
+      full_name: form.full_name.trim(),
+      store_id: Number(form.store_id),
+      allowed_store_ids: allowed,
+      permissions: form.role === 'admin' ? form.permissions : [],
+    });
+  }
+
+  return (
+    <Modal title={form.id ? `แก้ไขผู้ใช้ ${initial.username}` : 'เพิ่มผู้ใช้'} onClose={onClose}>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+        <Field label="Username">
+          <input style={inputStyle} value={form.username} onChange={(e) => set('username', e.target.value)} placeholder="เช่น staff_branch2" />
+        </Field>
+        <Field label={form.id ? 'รหัสผ่านใหม่ (ว่างไว้ถ้าไม่เปลี่ยน)' : 'รหัสผ่าน'}>
+          <div style={{ position: 'relative' }}>
+            <input
+              style={{ ...inputStyle, paddingRight: 56 }}
+              type={showPassword ? 'text' : 'password'}
+              value={form.password}
+              onChange={(e) => set('password', e.target.value)}
+              placeholder="อย่างน้อย 8 ตัวอักษร"
+            />
+            <button
+              type="button"
+              onClick={() => setShowPassword((v) => !v)}
+              title={showPassword ? 'ซ่อนรหัสผ่าน' : 'แสดงรหัสผ่าน'}
+              style={{
+                position: 'absolute', right: 6, top: 6, bottom: 6,
+                minWidth: 40, border: 'none', borderRadius: 6,
+                background: '#f0f0f5', cursor: 'pointer', fontSize: 15,
+              }}
+            >
+              {showPassword ? '🙈' : '👁'}
+            </button>
+          </div>
+        </Field>
+      </div>
+      <Field label="ชื่อที่แสดง">
+        <input style={inputStyle} value={form.full_name} onChange={(e) => set('full_name', e.target.value)} />
+      </Field>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+        <Field label="Role">
+          <select style={inputStyle} value={form.role} onChange={(e) => set('role', e.target.value)}>
+            {roleOptions.map((role) => <option key={role} value={role}>{ROLE_LABELS[role] || role}</option>)}
+          </select>
+        </Field>
+        <Field label="ร้านหลัก">
+          <select style={inputStyle} value={form.store_id} onChange={(e) => set('store_id', Number(e.target.value))}>
+            {allowedStores.map((s) => (
+              <option key={s.id} value={s.id}>{s.logo || 'ร้าน'} {s.name}</option>
+            ))}
+          </select>
+        </Field>
+      </div>
+      <Field label="ร้านที่เข้าได้">
+        <div style={{ position: 'relative' }}>
+          <button
+            type="button"
+            onClick={() => setStoresDropdownOpen((v) => !v)}
+            style={{
+              ...inputStyle,
+              textAlign: 'left',
+              background: 'white',
+              minHeight: 40,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: 10,
+              cursor: 'pointer',
+            }}
+          >
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {allowedStoreLabel}
+            </span>
+            <span style={{ color: '#777' }}>▾</span>
+          </button>
+          {storesDropdownOpen && (
+            <div
+              style={{
+                position: 'absolute',
+                top: 'calc(100% + 4px)',
+                left: 0,
+                right: 0,
+                zIndex: 120,
+                background: 'white',
+                border: '1.5px solid #e5e5ea',
+                borderRadius: 8,
+                boxShadow: '0 12px 28px rgba(0,0,0,.16)',
+                overflow: 'hidden',
+                maxHeight: 240,
+                overflowY: 'auto',
+              }}
+            >
+              {stores.map((s) => {
+                const checked = allowedStoreIds.includes(Number(s.id));
+                return (
+                  <label
+                    key={s.id}
+                    style={{
+                      display: 'flex',
+                      gap: 9,
+                      alignItems: 'center',
+                      padding: '10px 12px',
+                      borderBottom: '1px solid #f1f1f4',
+                      cursor: 'pointer',
+                      background: checked ? '#f7f7fb' : 'white',
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => toggleStore(s.id)}
+                    />
+                    <span style={{ flex: 1 }}>{s.logo || 'ร้าน'} {s.name}</span>
+                    <span style={{ color: '#888', fontSize: 12 }}>#{s.id}</span>
+                  </label>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </Field>
+      {isSuperAdmin && form.role === 'admin' && (
+        <Field label="สิทธิ์ admin เพิ่มเติม">
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
+            {['store_admin', 'mobile_admin'].map((permission) => (
+              <label key={permission} style={{ display: 'flex', gap: 8, alignItems: 'center', border: '1px solid #eee', borderRadius: 8, padding: '8px 10px' }}>
+                <input
+                  type="checkbox"
+                  checked={(form.permissions || []).includes(permission)}
+                  onChange={() => togglePermission(permission)}
+                />
+                <span>{permission}</span>
+              </label>
+            ))}
+          </div>
+        </Field>
+      )}
+      <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12, fontSize: 13 }}>
+        <input type="checkbox" checked={!!form.is_active} onChange={(e) => set('is_active', e.target.checked)} />
+        เปิดใช้งานบัญชีนี้
+      </label>
+      <button onClick={save} style={{ ...btnPrimary, width: '100%' }}>บันทึกผู้ใช้</button>
+    </Modal>
+  );
+}
+
+const thStyle = { textAlign: 'left', padding: 10, whiteSpace: 'nowrap', fontSize: 12 };
+const tdStyle = { padding: 10, verticalAlign: 'top' };
+
+// ─────────────────────────────────────────────────────────────────────
 function OrdersTab() {
   const [orders, setOrders] = useState([]);
   const [filter, setFilter] = useState('active');
+  const [previewOrderId, setPreviewOrderId] = useState(null);
   const reload = useCallback(async () => {
     const list = await authFetch('/api/orders');
     setOrders(list);
@@ -220,34 +858,49 @@ function OrdersTab() {
           </button>
         ))}
       </div>
-      <table style={{ width: '100%', borderCollapse: 'collapse', background: 'white', borderRadius: 14, overflow: 'hidden' }}>
-        <thead style={{ background: '#f8f8fa', fontSize: 12, color: '#888' }}>
-          <tr>
-            <th style={th}>#</th><th style={th}>โต๊ะ</th><th style={th}>สถานะ</th>
-            <th style={th}>ยอด</th><th style={th}>เวลา</th><th style={th}>ที่มา</th>
-          </tr>
-        </thead>
-        <tbody>
-          {filtered.map((o) => (
-            <tr key={o.id} style={{ borderTop: '1px solid #f0f0f5' }}>
-              <td style={td}>#{o.id}</td>
-              <td style={td}>{o.table_name}</td>
-              <td style={td}>
-                <span style={{ background: STATUS_BG[o.status] || '#eee', color: STATUS_FG[o.status] || '#333',
-                               padding: '3px 10px', borderRadius: 12, fontSize: 12, fontWeight: 600 }}>
-                  {STATUS_LABEL[o.status] || o.status}
-                </span>
-              </td>
-              <td style={td}>฿{Number(o.total_amount).toFixed(0)}</td>
-              <td style={td}>{new Date(o.created_at).toLocaleString('th-TH')}</td>
-              <td style={td}>{o.source}</td>
+      <div className="admin-table-wrap">
+        <table style={{ width: '100%', borderCollapse: 'collapse', background: 'white' }}>
+          <thead style={{ background: '#f8f8fa', fontSize: 12, color: '#888' }}>
+            <tr>
+              <th style={th}>#</th><th style={th}>โต๊ะ</th><th style={th}>สถานะ</th>
+              <th style={th}>ยอด</th><th style={th}>เวลา</th><th style={th}>ที่มา</th>
+              <th style={th}>พิมพ์</th>
             </tr>
-          ))}
-          {filtered.length === 0 && (
-            <tr><td colSpan={6} style={{ textAlign: 'center', color: '#aaa', padding: 30 }}>ไม่มีข้อมูล</td></tr>
-          )}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {filtered.map((o) => (
+              <tr key={o.id} style={{ borderTop: '1px solid #f0f0f5' }}>
+                <td style={td}>#{o.id}</td>
+                <td style={td}>{o.table_name}</td>
+                <td style={td}>
+                  <span style={{ background: STATUS_BG[o.status] || '#eee', color: STATUS_FG[o.status] || '#333',
+                                 padding: '3px 10px', borderRadius: 12, fontSize: 12, fontWeight: 600 }}>
+                    {STATUS_LABEL[o.status] || o.status}
+                  </span>
+                </td>
+                <td style={td}>฿{Number(o.total_amount).toFixed(0)}</td>
+                <td style={{ ...td, whiteSpace: 'nowrap' }}>{new Date(o.created_at).toLocaleString('th-TH')}</td>
+                <td style={td}>{o.source}</td>
+                <td style={{ ...td, whiteSpace: 'nowrap' }}>
+                  <button onClick={() => setPreviewOrderId(o.id)}
+                          style={{ ...btnSecondary, fontSize: 11, padding: '4px 8px' }}>
+                    👁 ดูตัวอย่าง
+                  </button>
+                </td>
+              </tr>
+            ))}
+            {filtered.length === 0 && (
+              <tr><td colSpan={7} style={{ textAlign: 'center', color: '#aaa', padding: 30 }}>ไม่มีข้อมูล</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+      {previewOrderId && (
+        <PrintPreviewModal
+          orderId={previewOrderId}
+          onClose={() => setPreviewOrderId(null)}
+        />
+      )}
     </div>
   );
 }
@@ -287,7 +940,7 @@ function AccountingTab() {
       const res = await fetch(`${apiBase}/api/accounting/export?${qs}`, {
         cache: 'no-store',
         credentials: apiBase ? 'omit' : 'same-origin',
-        headers: { Authorization: `Bearer ${auth.token}` },
+        headers: { Authorization: `Bearer ${auth.token}`, ...activeStoreHeaders(auth) },
       });
       if (!res.ok) {
         let msg = `HTTP ${res.status}`;
@@ -466,11 +1119,19 @@ function ProductsTab() {
   const reload = useCallback(async () => {
     const [p, c, s] = await Promise.all([
       authFetch('/api/products/admin'),
-      fetch(`${apiBase}/api/categories`).then(r => r.json()),
+      authFetch('/api/categories/all'),
       authFetch('/api/print/stations').catch(() => []),
     ]);
     setProducts(p); setCategories(c); setStations(s);
   }, []);
+
+  // Live-sync product availability via proven useRealtimeRecovery pattern
+  // (auto re-attach on socket rebuild + polling fallback every 15 s).
+  useRealtimeRecovery(reload, {
+    events: ['product:availability'],
+    intervalMs: 5000,
+    reloadOnMount: false,
+  });
   useEffect(() => { reload(); }, [reload]);
 
   async function save(form, imageFile) {
@@ -502,9 +1163,21 @@ function ProductsTab() {
       reload();
     } catch (e) { setError(e.message); }
   }
+  const [availBusyId, setAvailBusyId] = useState(null);
   async function toggleAvail(p) {
-    try { await authFetch(`/api/products/${p.id}`, { method: 'PUT', body: JSON.stringify({ is_available: !p.is_available }) }); reload(); }
-    catch (e) { setError(e.message); }
+    if (availBusyId === p.id) return; // double-click guard
+    setAvailBusyId(p.id);
+    setError(null);
+    try {
+      const next = !p.is_available;
+      const saved = await authFetch(`/api/products/${p.id}/availability`, {
+        method: 'PATCH',
+        body: JSON.stringify({ is_available: next }),
+      });
+      setProducts((list) => list.map((x) =>
+        x.id === saved.id ? { ...x, is_available: saved.is_available } : x));
+    } catch (e) { setError(e.message); }
+    finally { setAvailBusyId(null); }
   }
   async function generateBarcode(p, force = false) {
     setBarcodeBusy(p.id);
@@ -531,7 +1204,8 @@ function ProductsTab() {
     } catch (e) { setError(e.message); }
     finally { setBarcodeBusy(null); }
   }
-  async function printBarcodeLabel(p) {
+  const [printingBarcode, setPrintingBarcode] = useState(null); // product object
+  async function printBarcodeBrowser(p) {
     setError(null);
     const w = window.open('', '_blank', 'width=420,height=320');
     if (!w) {
@@ -546,7 +1220,7 @@ function ProductsTab() {
       const res = await fetch(`${apiBase}/api/products/${p.id}/barcode/label.svg`, {
         cache: 'no-store',
         credentials: apiBase ? 'omit' : 'same-origin',
-        headers: { Authorization: `Bearer ${auth.token}` },
+        headers: { Authorization: `Bearer ${auth.token}`, ...activeStoreHeaders(auth) },
       });
       if (!res.ok) {
         let msg = `HTTP ${res.status}`;
@@ -620,14 +1294,21 @@ function ProductsTab() {
                 </div>
               </div>
               <div style={{ display: 'flex', gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
-                <button onClick={() => toggleAvail(p)} style={{ ...btnSecondary, flex: 1, fontSize: 12 }}>
-                  {p.is_available ? '🟢 พร้อมขาย' : '⛔ หมด'}
+                <button onClick={() => toggleAvail(p)} disabled={availBusyId === p.id}
+                        style={{ ...btnSecondary, flex: 1, fontSize: 12,
+                                 opacity: availBusyId === p.id ? .6 : 1,
+                                 background: p.is_available ? '#e8f5e9' : '#fef0ef',
+                                 color: p.is_available ? '#1f6f43' : '#c0392b',
+                                 fontWeight: 700 }}>
+                  {availBusyId === p.id
+                    ? '...'
+                    : (p.is_available ? '🟢 พร้อมขาย · กดเพื่อปิด' : '🛑 ปิดขาย · กดเพื่อเปิด')}
                 </button>
                 <button onClick={() => setEditing(p)} style={{ ...btnSecondary, fontSize: 12 }}>แก้</button>
                 {p.barcode ? (
-                  <button onClick={() => printBarcodeLabel(p)}
+                  <button onClick={() => setPrintingBarcode(p)}
                           style={{ ...btnSecondary, fontSize: 12 }}>
-                    พิมพ์ barcode
+                    🖨 พิมพ์ barcode
                   </button>
                 ) : (
                   <button onClick={() => generateBarcode(p)}
@@ -649,7 +1330,75 @@ function ProductsTab() {
       {editing && <ProductModal initial={editing === 'new' ? null : editing} categories={categories}
                                 stations={stations}
                                 onClose={() => setEditing(null)} onSave={save} />}
+      {printingBarcode && (
+        <BarcodePrintModal
+          product={printingBarcode}
+          stations={stations}
+          onClose={() => setPrintingBarcode(null)}
+          onBrowserPrint={() => { printBarcodeBrowser(printingBarcode); setPrintingBarcode(null); }}
+        />
+      )}
     </div>
+  );
+}
+
+function BarcodePrintModal({ product, stations, onClose, onBrowserPrint }) {
+  // Stations whose station_type can drive a label printer. We allow any
+  // active station — the user knows their setup better than we do.
+  const printable = (stations || []).filter((s) => s.is_active !== false);
+  const [stationKey, setStationKey] = useState(printable[0]?.key || '');
+  const [copies, setCopies] = useState(1);
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState(null);
+  const [error, setError] = useState(null);
+
+  async function sendToPrinter() {
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      await authFetch(`/api/print/barcode/${product.id}`, {
+        method: 'POST',
+        body: JSON.stringify({ station_key: stationKey || undefined, copies }),
+      });
+      setNotice(`ส่งคิวพิมพ์ "${product.name}" × ${copies} ใบแล้ว`);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal title={`🖨 พิมพ์ barcode · ${product.name}`} onClose={onClose} maxWidth={480}>
+      <div style={{ fontSize: 13, color: '#555', marginBottom: 12 }}>
+        Barcode: <code style={{ background: '#f0f0f5', padding: '2px 6px', borderRadius: 4 }}>{product.barcode}</code>
+      </div>
+      <Field label="เครื่องพิมพ์">
+        <select style={inputStyle} value={stationKey} onChange={(e) => setStationKey(e.target.value)} disabled={busy}>
+          <option value="">(ค่าเริ่มต้นในระบบ)</option>
+          {printable.map((s) => (
+            <option key={s.key} value={s.key}>
+              {s.name} ({s.printer_key || s.printer_host || s.key})
+            </option>
+          ))}
+        </select>
+      </Field>
+      <Field label="จำนวน (1-8)">
+        <select style={inputStyle} value={copies} onChange={(e) => setCopies(Number(e.target.value) || 1)} disabled={busy}>
+          {[1, 2, 3, 4, 5, 6, 8].map((n) => <option key={n} value={n}>{n}</option>)}
+        </select>
+      </Field>
+      {notice && <p style={{ color: '#05795c', fontWeight: 700 }}>{notice}</p>}
+      {error && <p style={{ color: '#c00' }}>{error}</p>}
+      <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', flexWrap: 'wrap', marginTop: 8 }}>
+        <button onClick={onClose} style={btnSecondary}>ปิด</button>
+        <button onClick={onBrowserPrint} style={btnSecondary}>🌐 พิมพ์ผ่านเบราว์เซอร์ (A4)</button>
+        <button onClick={sendToPrinter} disabled={busy} style={btnPrimary}>
+          {busy ? 'กำลังส่ง...' : '🧾 ส่งคิวพิมพ์'}
+        </button>
+      </div>
+    </Modal>
   );
 }
 
@@ -1405,6 +2154,9 @@ function QRCodesTab() {
   const [lanBase, setLanBase] = useState(null);
   const [wifiOnlyQr, setWifiOnlyQr] = useState(false);
   const [gpsGuardEnabled, setGpsGuardEnabled] = useState(false);
+  const [storeName, setStoreName] = useState('');
+  const [storeLogo, setStoreLogo] = useState('');
+  const [printCopies, setPrintCopies] = useState(1);
 
   // Resolution order for QR base URL:
   //   1. localStorage override (admin's last-typed value — most specific)
@@ -1428,17 +2180,22 @@ function QRCodesTab() {
         if (discoveryLanRoot) setLanBase(discoveryLanRoot);
       } catch {}
       try {
-        settings = await fetch(`${apiBase}/api/settings`, { cache: 'no-store' }).then((r) => r.json());
+        settings = await authFetch('/api/settings');
       } catch {}
       const wifiOnly = !!settings?.ordering_require_private_ip;
       setGpsGuardEnabled(!!settings?.ordering_require_gps);
       setWifiOnlyQr(wifiOnly);
+      setStoreName(settings?.name || '');
+      setStoreLogo(settings?.logo || '');
       const stored = trimOrderRoot(storageGet('pos_v2_qr_base'));
       const envBase = trimOrderRoot(process.env.NEXT_PUBLIC_PUBLIC_BASE);
       const lanRoot = localQrRoot();
+      const currentLanRoot = discoveryLanRoot || lanRoot;
+      const currentPublicRoot = resolved || envBase || currentLanRoot;
+      const usableStored = isStaleQrBase(stored, currentLanRoot, currentPublicRoot) ? '' : stored;
       const root = wifiOnly
-        ? (stored && isLanLikeUrl(stored) ? stored : (discoveryLanRoot || lanRoot))
-        : (stored || resolved || envBase || lanRoot);
+        ? (usableStored && isLanLikeUrl(usableStored) ? usableStored : currentLanRoot)
+        : (usableStored || currentPublicRoot);
       setBaseUrl(`${trimOrderRoot(root)}/order`);
       authFetch('/api/tables').then((list) => setTables(list.filter((t) => t.is_active)));
     })();
@@ -1486,6 +2243,65 @@ function QRCodesTab() {
         )}
       </div>
 
+      <div style={{ ...card, display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 10 }}>
+        <div style={{ fontWeight: 700, fontSize: 13 }}>🖨 พิมพ์ QR สำหรับลูกค้า</div>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#555' }}>
+          จำนวนสำเนาต่อโต๊ะ
+          <select value={printCopies} onChange={(e) => setPrintCopies(Number(e.target.value) || 1)}
+                  style={{ ...inputStyle, width: 80, padding: '6px 8px', fontSize: 13 }}>
+            {[1, 2, 3, 4, 6, 8].map((n) => <option key={n} value={n}>{n}</option>)}
+          </select>
+        </label>
+        <button
+          type="button"
+          onClick={async () => {
+            const list = tables.filter((t) => t.is_active);
+            if (!list.length) return;
+            try {
+              for (const t of list) {
+                await authFetch('/api/print/qr', {
+                  method: 'POST',
+                  body: JSON.stringify({
+                    url: `${baseUrl}?t=${t.qr_token}`,
+                    table_name: t.name,
+                    table_code: t.code,
+                    store_name: storeName,
+                    store_logo: storeLogo,
+                    copies: printCopies,
+                  }),
+                });
+              }
+              alert(`ส่งคิวพิมพ์ QR ${list.length} โต๊ะ × ${printCopies} ใบ`);
+            } catch (e) { alert(`พิมพ์ไม่สำเร็จ: ${e.message}`); }
+          }}
+          style={btnPrimary}
+        >
+          🧾 พิมพ์ทุกโต๊ะ (เครื่องใบเสร็จ)
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            const list = tables.filter((t) => t.is_active);
+            if (!list.length) return;
+            const qrUrls = list.map((t) => ({
+              url: `${baseUrl}?t=${t.qr_token}`,
+              tableName: t.name,
+              tableCode: t.code,
+            }));
+            openMultiQrPrintWindow({
+              storeName, storeLogo, tables: qrUrls,
+              copies: printCopies, note: 'สแกน QR เพื่อสั่งอาหาร',
+            });
+          }}
+          style={btnSecondary}
+        >
+          🌐 ทุกโต๊ะ (เบราว์เซอร์ A4)
+        </button>
+        <span style={{ fontSize: 11, color: '#888', flexBasis: '100%' }}>
+          ปุ่ม "เครื่องใบเสร็จ" ส่งคิวพิมพ์ผ่าน thermal printer (ESC/POS) · ปุ่ม "เบราว์เซอร์" สำหรับเครื่องพิมพ์ A4 ทั่วไป
+        </span>
+      </div>
+
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 12 }}>
         {tables.map((t) => {
           const isTakeaway = t.is_takeaway || t.code === 'TAKEAWAY' || Number(t.seats) === 0;
@@ -1499,15 +2315,106 @@ function QRCodesTab() {
               </div>
               <img src={qrSrc} alt={`QR ${t.code}`}
                    style={{ width: '100%', maxWidth: 200, height: 'auto', margin: '10px auto', borderRadius: 8 }} />
-              <button onClick={() => window.open(qrSrc, '_blank')} style={btnSecondary}>
-                เปิดรูป
-              </button>
+              <div style={{ display: 'flex', gap: 6, justifyContent: 'center', flexWrap: 'wrap' }}>
+                <button onClick={() => window.open(qrSrc, '_blank')} style={{ ...btnSecondary, fontSize: 12, padding: '6px 10px' }}>
+                  เปิดรูป
+                </button>
+                <button onClick={async () => {
+                  try {
+                    await authFetch('/api/print/qr', {
+                      method: 'POST',
+                      body: JSON.stringify({
+                        url, table_name: t.name, table_code: t.code,
+                        store_name: storeName, store_logo: storeLogo,
+                        copies: printCopies,
+                      }),
+                    });
+                    alert(`ส่งคิวพิมพ์ QR "${t.name}" × ${printCopies} ใบแล้ว`);
+                  } catch (e) { alert(`พิมพ์ไม่สำเร็จ: ${e.message}`); }
+                }} style={{ ...btnPrimary, fontSize: 12, padding: '6px 10px' }}>
+                  🧾 พิมพ์
+                </button>
+                <button onClick={() => openQrPrintWindow({
+                  url, tableName: t.name, tableCode: t.code,
+                  storeName, storeLogo, copies: printCopies,
+                  note: 'สแกน QR เพื่อสั่งอาหาร',
+                })} style={{ ...btnSecondary, fontSize: 12, padding: '6px 10px' }}
+                title="พิมพ์ผ่านเบราว์เซอร์ (สำหรับเครื่องพิมพ์ A4)">
+                  🌐
+                </button>
+              </div>
             </div>
           );
         })}
       </div>
     </div>
   );
+}
+
+// Bulk print: writes one window containing every table's QR on the
+// same sheet, so the user can hand out paper QR codes in one go.
+function openMultiQrPrintWindow({ storeName, storeLogo, tables, copies = 1, note }) {
+  if (typeof window === 'undefined' || !tables?.length) return;
+  const w = window.open('', '_blank', 'width=900,height=700');
+  if (!w) { alert('Browser block popup'); return; }
+  const esc = (v) => String(v ?? '')
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  const copyCount = Math.max(1, Math.min(8, Number(copies) || 1));
+  const items = [];
+  for (const t of tables) {
+    for (let i = 0; i < copyCount; i += 1) {
+      const qrSrc = `${apiBase}/api/qr?size=320&text=${encodeURIComponent(t.url)}`;
+      items.push(`
+        <section class="qr-card">
+          ${storeName ? `<div class="store">${storeLogo ? esc(storeLogo) + ' ' : ''}${esc(storeName)}</div>` : ''}
+          <div class="note">${esc(note || 'สแกน QR เพื่อสั่งอาหาร')}</div>
+          <div class="table-name">${esc(t.tableName)}</div>
+          ${t.tableCode ? `<div class="table-code">${esc(t.tableCode)}</div>` : ''}
+          <img class="qr" src="${qrSrc}" alt="QR ${esc(t.tableCode)}" />
+          <div class="url">${esc(t.url)}</div>
+        </section>
+      `);
+    }
+  }
+  w.document.open();
+  w.document.write(`<!doctype html><html lang="th"><head><meta charset="utf-8"/>
+  <title>พิมพ์ QR ทุกโต๊ะ</title>
+  <style>
+    *,*::before,*::after{box-sizing:border-box}
+    html,body{margin:0;padding:0;background:#f4f4f6;font-family:system-ui,-apple-system,"Segoe UI","Sarabun",sans-serif;color:#111}
+    body{padding:24px 16px}
+    .toolbar{position:sticky;top:0;background:#fff;padding:10px 14px;border-radius:10px;box-shadow:0 4px 14px rgba(0,0,0,.08);display:flex;gap:8px;justify-content:center;margin-bottom:16px}
+    .toolbar button{border:none;border-radius:8px;padding:9px 16px;font-size:13px;font-weight:700;cursor:pointer}
+    .btn-primary{background:#1a1a2e;color:#fff}
+    .btn-secondary{background:#f0f0f5;color:#1a1a2e}
+    .sheet{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;max-width:1100px;margin:0 auto}
+    .qr-card{background:#fff;border:2px dashed #999;border-radius:14px;padding:14px 12px;text-align:center;page-break-inside:avoid;break-inside:avoid}
+    .store{font-size:12px;font-weight:700;color:#555;margin-bottom:4px}
+    .note{font-size:11px;color:#777;margin-bottom:6px}
+    .table-name{font-size:22px;font-weight:800;color:#1a1a2e;line-height:1.1}
+    .table-code{font-size:11px;color:#888;margin-top:2px}
+    .qr{width:100%;max-width:200px;height:auto;display:block;margin:10px auto}
+    .url{font-size:10px;color:#666;word-break:break-all;padding:0 4px}
+    @media print{
+      body{background:#fff;padding:0}
+      .toolbar{display:none}
+      .sheet{max-width:none;margin:0;gap:0;grid-template-columns:repeat(2,1fr)}
+      .qr-card{border-color:#ccc;box-shadow:none;margin:4mm;padding:6mm 4mm}
+      @page{size:auto;margin:6mm}
+    }
+  </style></head>
+  <body>
+    <div class="toolbar">
+      <button class="btn-primary" onclick="window.print()">🖨 พิมพ์</button>
+      <button class="btn-secondary" onclick="window.close()">ปิด</button>
+    </div>
+    <main class="sheet">${items.join('')}</main>
+    <script>
+      window.addEventListener('load',()=>{const i=Array.from(document.images);let p=i.length;if(!p){setTimeout(()=>window.print(),400);return}i.forEach(x=>{if(x.complete){if(!--p)setTimeout(()=>window.print(),400)}else{x.addEventListener('load',()=>{if(!--p)setTimeout(()=>window.print(),400)});x.addEventListener('error',()=>{if(!--p)setTimeout(()=>window.print(),400)})}})});
+    </script>
+  </body></html>`);
+  w.document.close();
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -1517,6 +2424,7 @@ function PrinterTab() {
   const [paymentDraft, setPaymentDraft] = useState(null);
   const [orderingDraft, setOrderingDraft] = useState(null);
   const [stations, setStations] = useState([]);
+  const [windowsPrinters, setWindowsPrinters] = useState([]);
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
   const [savingPayment, setSavingPayment] = useState(false);
@@ -1526,7 +2434,8 @@ function PrinterTab() {
   useEffect(() => {
     authFetch('/api/print/config').then(setConfig).catch((e) => setError(e.message));
     authFetch('/api/print/stations').then(setStations).catch(() => setStations([]));
-    fetch(`${apiBase}/api/settings`).then((r) => r.json()).then((s) => {
+    authFetch('/api/print/windows-printers').then(setWindowsPrinters).catch(() => setWindowsPrinters([]));
+    authFetch('/api/settings').then((s) => {
       setSettings(s);
       setPaymentDraft(paymentDraftFromSettings(s));
       setOrderingDraft(orderingDraftFromSettings(s));
@@ -1568,6 +2477,7 @@ function PrinterTab() {
       setStations((list) => list.map((s) => (s.key === saved.key ? saved : s)));
       setResult({
         saved_station: saved.key,
+        printer_key: saved.printer_key,
         printer_host: saved.printer_host,
         printer_port: saved.printer_port,
         paper_width_mm: saved.paper_width_mm,
@@ -1741,8 +2651,8 @@ function PrinterTab() {
       <div style={{ ...card }}>
         <h3 style={{ margin: 0, marginBottom: 10 }}>🤖 พิมพ์อัตโนมัติเมื่อมีออเดอร์</h3>
         <p style={{ fontSize: 12, color: '#888', margin: '0 0 10px' }}>
-          เมื่อเปิด → backend จะคิวพิมพ์ใบครัว/ใบเสร็จทันทีที่ลูกค้า/พนักงานยืนยันออเดอร์
-          ใบจะถูกส่งหา print server/raw TCP ที่ตั้งในแต่ละจุดพิมพ์ ส่วน BLE printer (มือถือ) เปิดใน app เอง
+          เมื่อเปิด → backend จะคิวพิมพ์ใบงานครัวทันทีที่ลูกค้า/พนักงานยืนยันออเดอร์
+          ใบเสร็จลูกค้าจะพิมพ์จากปุ่มของ staff/admin เท่านั้น
         </p>
         {settings ? (
           <>
@@ -1751,13 +2661,12 @@ function PrinterTab() {
                      onChange={(e) => toggleAuto('auto_print_kitchen', e.target.checked)} />
               <span>🍳 พิมพ์ใบครัวอัตโนมัติ</span>
             </label>
-            <label style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 0' }}>
-              <input type="checkbox" checked={!!settings.auto_print_receipt}
-                     onChange={(e) => toggleAuto('auto_print_receipt', e.target.checked)} />
-              <span>🧾 พิมพ์ใบเสร็จลูกค้าอัตโนมัติ</span>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 0', opacity: 0.7 }}>
+              <input type="checkbox" checked={false} disabled readOnly />
+              <span>🧾 ใบเสร็จลูกค้า: staff/admin พิมพ์เองเท่านั้น</span>
             </label>
             <p style={{ fontSize: 11, color: '#888', marginTop: 4 }}>
-              💡 ทั่วไปเปิดเฉพาะใบครัว ใบเสร็จลูกค้ามักพิมพ์ตอน "ชำระแล้ว" จากปุ่ม 🖨️
+              💡 ปิด/เปิดจุดพิมพ์แต่ละโซนได้จากตารางด้านล่าง ระบบจะไม่ส่งงานไปโซนที่ปิดไว้
             </p>
           </>
         ) : <p style={{ fontSize: 12, color: '#888' }}>กำลังโหลดการตั้งค่า...</p>}
@@ -1958,8 +2867,10 @@ function PrinterTab() {
       <div style={{ ...card }}>
         <h3 style={{ margin: 0, marginBottom: 10 }}>เครื่องพิมพ์หลัก / fallback จาก backend .env</h3>
         <Row label="สถานะ" value={config.enabled ? '🟢 เปิดใช้' : '⛔ ปิด'} />
+        <Row label="Transport" value={config.transport || 'tcp'} />
         <Row label="Host" value={config.host || '(ไม่ได้ตั้งค่า — จะ skip การพิมพ์)'} />
         <Row label="Port" value={String(config.port)} />
+        <Row label="Windows printer" value={config.windows_printer_name || '-'} />
         <Row label="Printer key" value={config.printer_key || '-'} />
         <Row label="Health" value={`${config.status?.status || 'unknown'}${config.status?.last_error_code ? ` · ${config.status.last_error_code}` : ''}`} />
         <Row label="Timeout" value={`${config.timeout_ms} ms`} />
@@ -1975,8 +2886,13 @@ function PrinterTab() {
       <div style={{ ...card }}>
         <h3 style={{ margin: 0, marginBottom: 10 }}>แยกเครื่องพิมพ์และตั้งค่ากระดาษตามจุดพิมพ์</h3>
         <p style={{ fontSize: 12, color: '#888', margin: '0 0 10px' }}>
-          ใช้กับ print server USB/WiFi ได้: กรอก IP/Port ของ print server แล้วตั้งกระดาษ, feed, cut ต่อจุดพิมพ์
+          ใช้ TCP ได้โดยกรอก IP/Port หรือใช้ Windows printer ได้โดยกรอก Printer key เป็น winspool:ชื่อเครื่องพิมพ์
         </p>
+        {windowsPrinters.length > 0 && (
+          <p style={{ fontSize: 11, color: '#666', margin: '0 0 10px' }}>
+            Windows printers: {windowsPrinters.map((p) => p.name).join(' · ')}
+          </p>
+        )}
         <div style={{ display: 'grid', gap: 10 }}>
           {stations.map((s) => (
             <div key={s.key} style={{ border: '1px solid #e5e5ea', borderRadius: 10, padding: 10 }}>
@@ -2007,6 +2923,20 @@ function PrinterTab() {
                 <Field label="ชื่อจุดผลิต">
                   <input style={inputStyle} value={s.name || ''}
                          onChange={(e) => setStationField(s.key, 'name', e.target.value)} />
+                </Field>
+                <Field label="Printer key / Windows">
+                  <input
+                    style={inputStyle}
+                    value={s.printer_key || ''}
+                    list={`win-printers-${s.key}`}
+                    placeholder="winspool:POS Thermal"
+                    onChange={(e) => setStationField(s.key, 'printer_key', e.target.value)}
+                  />
+                  <datalist id={`win-printers-${s.key}`}>
+                    {windowsPrinters.map((p) => (
+                      <option key={p.name} value={`winspool:${p.name}`} />
+                    ))}
+                  </datalist>
                 </Field>
                 <Field label="Host/IP เครื่องพิมพ์">
                   <input style={inputStyle} value={s.printer_host || ''}
@@ -2240,18 +3170,23 @@ function PrintQueueTab({ isAdmin }) {
 }
 
 // ─── Shared bits ────────────────────────────────────────────────────
-function Modal({ title, onClose, children }) {
+function Modal({ title, onClose, children, maxWidth = 840 }) {
   return (
     <div onClick={onClose}
          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.5)',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  zIndex: 100, padding: 16 }}>
-      <div onClick={(e) => e.stopPropagation()}
-           style={{ background: 'white', borderRadius: 14, padding: 16,
-                    width: '100%', maxWidth: 840, maxHeight: '90vh', overflowY: 'auto' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-          <h2 style={{ margin: 0, fontSize: 18 }}>{title}</h2>
-          <button onClick={onClose} style={{ ...btnSecondary, padding: '4px 10px' }}>✕</button>
+                  display: 'flex', alignItems: 'flex-start', justifyContent: 'center',
+                  zIndex: 100, padding: 'clamp(8px, 3vw, 16px)',
+                  overflowY: 'auto', WebkitOverflowScrolling: 'touch' }}>
+        <div onClick={(e) => e.stopPropagation()}
+             style={{ background: 'white', borderRadius: 14, padding: 'clamp(12px, 3vw, 16px)',
+                      width: '100%', maxWidth, maxHeight: 'calc(var(--app-height, 100vh) - 24px)',
+                      overflowY: 'auto', marginTop: 'clamp(8px, 4vh, 24px)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                      marginBottom: 12, gap: 10, position: 'sticky', top: 0, background: 'white',
+                      paddingBottom: 8, borderBottom: '1px solid #f0f0f5' }}>
+          <h2 style={{ margin: 0, fontSize: 18, overflow: 'hidden',
+                       textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{title}</h2>
+          <button onClick={onClose} style={{ ...btnSecondary, padding: '4px 10px', flex: 'none' }}>✕</button>
         </div>
         {children}
       </div>
@@ -2274,5 +3209,260 @@ function Row({ label, value }) {
       <div style={{ flex: '0 0 140px', color: '#888', fontSize: 13 }}>{label}</div>
       <div style={{ fontSize: 13, fontWeight: 500 }}>{value}</div>
     </div>
+  );
+}
+
+// ─── Print Preview ──────────────────────────────────────────────────
+// Editable HTML preview that mirrors the thermal receipt layout. Users
+// can tweak header/footer/notes before printing via the browser or
+// queueing the actual ESC/POS job.
+function PrintPreviewModal({ orderId, onClose }) {
+  const [order, setOrder] = useState(null);
+  const [settings, setSettings] = useState(null);
+  const [error, setError] = useState(null);
+  const [type, setType] = useState('receipt'); // 'receipt' | 'kitchen'
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState(null);
+
+  const [header, setHeader] = useState('');
+  const [stationLabel, setStationLabel] = useState('KITCHEN');
+  const [footer, setFooter] = useState('ขอบคุณที่ใช้บริการ\nThank you');
+  const [orderNote, setOrderNote] = useState('');
+  const [items, setItems] = useState([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      try {
+        const [ord, st] = await Promise.all([
+          authFetch(`/api/orders/${orderId}`),
+          authFetch('/api/settings').catch(() => null),
+        ]);
+        if (cancelled) return;
+        setOrder(ord);
+        setSettings(st || null);
+        setHeader(st?.name || 'POS V2');
+        setOrderNote(ord.note || '');
+        setItems((ord.items || []).map((it) => ({
+          key: it.id,
+          product_name: it.product_name || '',
+          variant_name: it.variant_name || '',
+          quantity: Number(it.quantity) || 0,
+          unit_price: Number(it.unit_price) || 0,
+          note: it.note || '',
+          options_text: Array.isArray(it.options_selected)
+            ? it.options_selected.map((o) => o.value).join(' · ')
+            : '',
+        })));
+      } catch (e) {
+        if (!cancelled) setError(e.message);
+      }
+    }
+    load();
+    return () => { cancelled = true; };
+  }, [orderId]);
+
+  function setItem(idx, patch) {
+    setItems((prev) => prev.map((it, i) => i === idx ? { ...it, ...patch } : it));
+  }
+
+  const total = items.reduce((s, it) => s + Number(it.unit_price || 0) * Number(it.quantity || 0), 0);
+
+  async function sendToPrinter() {
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      await authFetch(`/api/print/order/${orderId}?type=${type}`, { method: 'POST' });
+      setNotice(`ส่งงานพิมพ์ (${type === 'receipt' ? 'ใบเสร็จ' : 'ใบสั่ง'}) เข้าคิวแล้ว`);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function printBrowser() {
+    if (typeof window !== 'undefined') window.print();
+  }
+
+  if (error && !order) {
+    return (
+      <Modal title="ตัวอย่างการพิมพ์" onClose={onClose} maxWidth={520}>
+        <p style={{ color: '#c00' }}>{error}</p>
+      </Modal>
+    );
+  }
+  if (!order) {
+    return (
+      <Modal title="ตัวอย่างการพิมพ์" onClose={onClose} maxWidth={520}>
+        <p>กำลังโหลด...</p>
+      </Modal>
+    );
+  }
+
+  const createdAt = new Date(order.created_at).toLocaleString('th-TH');
+  const queueLabel = order.daily_seq ? `คิวที่ ${order.daily_seq}` : `Order #${order.id}`;
+  const tableLabel = order.table_name || order.table_code || '-';
+
+  return (
+    <Modal title={`ตัวอย่างการพิมพ์ · Order #${order.id}`} onClose={onClose} maxWidth={780}>
+      <div className="print-preview-no-print">
+        <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
+          <button onClick={() => setType('receipt')}
+                  style={{ ...btnSecondary,
+                           background: type === 'receipt' ? '#1a1a2e' : '#f0f0f5',
+                           color: type === 'receipt' ? 'white' : '#1a1a2e' }}>
+            🧾 ใบเสร็จลูกค้า
+          </button>
+          <button onClick={() => setType('kitchen')}
+                  style={{ ...btnSecondary,
+                           background: type === 'kitchen' ? '#1a1a2e' : '#f0f0f5',
+                           color: type === 'kitchen' ? 'white' : '#1a1a2e' }}>
+            🍳 ใบสั่งครัว
+          </button>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 10, marginBottom: 12 }}>
+          {type === 'receipt' && (
+            <Field label="ชื่อร้าน (เฉพาะใบเสร็จนี้)">
+              <input style={inputStyle} value={header} onChange={(e) => setHeader(e.target.value)} />
+            </Field>
+          )}
+          {type === 'kitchen' && (
+            <Field label="ป้ายหัวใบสั่ง">
+              <input style={inputStyle} value={stationLabel} onChange={(e) => setStationLabel(e.target.value)} />
+            </Field>
+          )}
+          <Field label="หมายเหตุออเดอร์">
+            <input style={inputStyle} value={orderNote} onChange={(e) => setOrderNote(e.target.value)} />
+          </Field>
+          {type === 'receipt' && (
+            <Field label="ข้อความท้ายใบเสร็จ">
+              <textarea style={{ ...inputStyle, minHeight: 48, resize: 'vertical' }}
+                        value={footer} onChange={(e) => setFooter(e.target.value)} />
+            </Field>
+          )}
+        </div>
+
+        <div style={{ ...card, marginBottom: 12 }}>
+          <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 8 }}>รายการ ({items.length})</div>
+          <div style={{ display: 'grid', gap: 6 }}>
+            {items.map((it, idx) => (
+              <div key={it.key || idx}
+                   style={{ display: 'grid',
+                            gridTemplateColumns: 'minmax(0, 1.6fr) 70px 90px',
+                            gap: 6, alignItems: 'center' }}>
+                <input style={{ ...inputStyle, fontSize: 12 }}
+                       value={it.product_name}
+                       onChange={(e) => setItem(idx, { product_name: e.target.value })}
+                       placeholder="ชื่อสินค้า" />
+                <input type="number" min={0} style={{ ...inputStyle, fontSize: 12, textAlign: 'right' }}
+                       value={it.quantity}
+                       onChange={(e) => setItem(idx, { quantity: Number(e.target.value) || 0 })} />
+                <input type="number" min={0} step="0.01"
+                       style={{ ...inputStyle, fontSize: 12, textAlign: 'right' }}
+                       value={it.unit_price}
+                       onChange={(e) => setItem(idx, { unit_price: Number(e.target.value) || 0 })} />
+              </div>
+            ))}
+            {items.length === 0 && (
+              <div style={{ color: '#999', fontSize: 12 }}>ไม่มีรายการ</div>
+            )}
+          </div>
+          <p style={{ fontSize: 11, color: '#888', marginTop: 8 }}>
+            * แก้ตัวอย่างนี้ใช้สำหรับพิมพ์เบราว์เซอร์เท่านั้น ไม่กระทบฐานข้อมูลออเดอร์
+          </p>
+        </div>
+      </div>
+
+      <div className="print-preview-shell">
+        <div className="print-preview-paper">
+          {type === 'receipt' ? (
+            <>
+              <div className="pp-center pp-big">{header || 'POS V2'}</div>
+              <div className="pp-center">--- ใบเสร็จ / RECEIPT ---</div>
+              <div className="pp-row">
+                <span>{queueLabel}</span>
+                <span>{tableLabel}</span>
+              </div>
+              <div>Order #{order.id}</div>
+              <div>{createdAt}</div>
+              <div className="pp-rule" />
+              {items.map((it, idx) => {
+                const lineTotal = (Number(it.unit_price) * Number(it.quantity)).toFixed(2);
+                const variantSuffix = it.variant_name ? ` (${it.variant_name})` : '';
+                return (
+                  <div key={idx} style={{ marginBottom: 4 }}>
+                    <div>{it.quantity} x {it.product_name}{variantSuffix}</div>
+                    <div className="pp-row indent">
+                      <span>@{Number(it.unit_price).toFixed(2)}</span>
+                      <span>{lineTotal}</span>
+                    </div>
+                    {it.options_text && <div className="pp-row indent">&gt; {it.options_text}</div>}
+                    {it.note && <div className="pp-row indent">*{it.note}</div>}
+                  </div>
+                );
+              })}
+              <div className="pp-rule" />
+              <div className="pp-row pp-total">
+                <span>TOTAL</span>
+                <span>{total.toFixed(2)}</span>
+              </div>
+              {orderNote && (
+                <>
+                  <div className="pp-rule" />
+                  <div className="pp-bold">หมายเหตุ:</div>
+                  <div>{orderNote}</div>
+                </>
+              )}
+              <div className="pp-rule" />
+              {footer && (
+                <div className="pp-center" style={{ whiteSpace: 'pre-line' }}>{footer}</div>
+              )}
+            </>
+          ) : (
+            <>
+              <div className="pp-center pp-big">** {stationLabel || 'KITCHEN'} **</div>
+              <div className="pp-center pp-bold" style={{ fontSize: 18 }}>{queueLabel}</div>
+              <div className="pp-center pp-bold" style={{ fontSize: 16 }}>{tableLabel}</div>
+              <div>Order #{order.id} · {createdAt}</div>
+              <div className="pp-rule" />
+              {items.map((it, idx) => {
+                const variantSuffix = it.variant_name ? ` (${it.variant_name})` : '';
+                return (
+                  <div key={idx} style={{ marginBottom: 6 }}>
+                    <div className="pp-bold" style={{ fontSize: 14 }}>
+                      {it.quantity} x {it.product_name}{variantSuffix}
+                    </div>
+                    {it.options_text && <div className="pp-row indent">&gt; {it.options_text}</div>}
+                    {it.note && <div className="pp-row indent">*{it.note}</div>}
+                  </div>
+                );
+              })}
+              <div className="pp-rule" />
+              {orderNote && (
+                <>
+                  <div className="pp-bold">NOTE: {orderNote}</div>
+                  <div className="pp-rule" />
+                </>
+              )}
+            </>
+          )}
+        </div>
+      </div>
+
+      {error && <p style={{ color: '#c00', marginTop: 10 }}>{error}</p>}
+      {notice && <p style={{ color: '#05795c', fontWeight: 700, marginTop: 10 }}>{notice}</p>}
+
+      <div className="print-preview-no-print"
+           style={{ display: 'flex', gap: 8, marginTop: 14, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+        <button onClick={onClose} style={btnSecondary}>ปิด</button>
+        <button onClick={printBrowser} style={btnSecondary}>🖨 พิมพ์ผ่านเบราว์เซอร์</button>
+        <button onClick={sendToPrinter} style={btnPrimary} disabled={busy}>
+          {busy ? 'กำลังส่ง...' : '📤 ส่งคิวพิมพ์จริง'}
+        </button>
+      </div>
+    </Modal>
   );
 }

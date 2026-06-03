@@ -282,6 +282,27 @@ class Product {
     stockAlertQty: double.tryParse((j['stock_alert_qty'] ?? 0).toString()) ?? 0,
     printStationKey: j['print_station_key'] as String?,
   );
+
+  Product copyWith({bool? isAvailable, double? stockQty}) => Product(
+    id: id,
+    categoryId: categoryId,
+    name: name,
+    description: description,
+    price: price,
+    imageUrl: imageUrl,
+    emoji: emoji,
+    isPopular: isPopular,
+    options: options,
+    variants: variants,
+    isAvailable: isAvailable ?? this.isAvailable,
+    sortOrder: sortOrder,
+    productType: productType,
+    barcode: barcode,
+    trackStock: trackStock,
+    stockQty: stockQty ?? this.stockQty,
+    stockAlertQty: stockAlertQty,
+    printStationKey: printStationKey,
+  );
 }
 
 class PosTable {
@@ -316,6 +337,44 @@ class PosTable {
           (code.toUpperCase() == 'TAKEAWAY' || seats == 0),
     );
   }
+}
+
+class PosStore {
+  final int id;
+  final String code;
+  final String? slug;
+  final String name;
+  final String? logo;
+  final String currency;
+  final String? publicBaseUrl;
+  final String timezone;
+  final bool isActive;
+
+  PosStore({
+    required this.id,
+    required this.code,
+    this.slug,
+    required this.name,
+    this.logo,
+    required this.currency,
+    this.publicBaseUrl,
+    required this.timezone,
+    required this.isActive,
+  });
+
+  bool get isDefault => id == 1 || code == 'default';
+
+  factory PosStore.fromJson(Map<String, dynamic> j) => PosStore(
+    id: j['id'] as int,
+    code: j['code'] as String? ?? '',
+    slug: j['slug'] as String?,
+    name: j['name'] as String? ?? '',
+    logo: j['logo'] as String?,
+    currency: j['currency'] as String? ?? '฿',
+    publicBaseUrl: j['public_base_url'] as String?,
+    timezone: j['timezone'] as String? ?? 'Asia/Bangkok',
+    isActive: j['is_active'] as bool? ?? true,
+  );
 }
 
 class RestaurantSettings {

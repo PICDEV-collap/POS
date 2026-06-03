@@ -46,10 +46,13 @@ class SocketService extends ChangeNotifier {
       }
       return;
     }
+    final transports = AppConfig.isNgrokFreeBase
+        ? ['polling', 'websocket']
+        : ['websocket', 'polling'];
     _socket = io.io(
       AppConfig.apiBase,
       io.OptionBuilder()
-          .setTransports(['websocket', 'polling'])
+          .setTransports(transports)
           .enableAutoConnect()
           .enableReconnection()
           .setReconnectionAttempts(999999)
@@ -57,6 +60,7 @@ class SocketService extends ChangeNotifier {
           .setReconnectionDelayMax(2500)
           .setTimeout(3000)
           .setAuth({'client_id': _clientId, 'last_event_id': _lastEventId})
+          .setExtraHeaders(AppConfig.tunnelHeaders)
           .build(),
     );
     _installLegacyDispatchers();
@@ -77,6 +81,19 @@ class SocketService extends ChangeNotifier {
       _heartbeat?.cancel();
       _heartbeat = null;
       notifyListeners();
+    });
+    _socket!.onConnectError((err) async {
+      if (!AppConfig.isHandshakeError(err)) return;
+      final repaired = await AppConfig.repairBaseAfterHandshake();
+      if (!repaired || _socket == null) return;
+      _heartbeat?.cancel();
+      _heartbeat = null;
+      _socket?.dispose();
+      _socket = null;
+      _legacyDispatchers.clear();
+      _connected = false;
+      notifyListeners();
+      connect();
     });
     _socket!.on('realtime:event', (payload) {
       if (payload is! Map) return;
@@ -204,6 +221,12 @@ class SocketService extends ChangeNotifier {
     if (id == null) return null;
     if (event == 'order:update') {
       return '$event:$id:${payload['status']}:${payload['updated_at']}';
+    }
+    if (event == 'product:availability') {
+      // Include the new value — without it, toggling a product multiple
+      // times within 3 s collapses to one "dispatch" and later toggles
+      // never reach handlers (mobile stays out of sync with web/admin).
+      return '$event:$id:${payload['is_available']}';
     }
     return '$event:$id';
   }

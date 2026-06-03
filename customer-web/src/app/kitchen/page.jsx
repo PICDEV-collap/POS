@@ -76,6 +76,20 @@ export default function KitchenPage() {
   useEffect(() => {
     const a = getAuth();
     if (!a) { router.replace('/login?next=/kitchen'); return; }
+    const role = a.user?.role;
+    if (role === 'staff') {
+      router.replace('/staff');
+      return;
+    }
+    if (role === 'admin' || role === 'super_admin') {
+      router.replace('/admin');
+      return;
+    }
+    if (role !== 'kitchen') {
+      clearAuth();
+      router.replace('/login?next=/kitchen');
+      return;
+    }
     setAuthState(a);
     reload();
     // Push state probe
@@ -139,8 +153,8 @@ export default function KitchenPage() {
   const recentDone = orders.filter((o) => o.status === 'paid').slice(0, 8);
 
   return (
-    <main style={{ minHeight: 'var(--app-height, 100vh)', background: '#0f0f1a', color: 'white', fontFamily: 'system-ui, sans-serif' }}>
-      <div style={{
+    <main className="pos-app-shell kitchen-page-shell" style={{ minHeight: 'var(--app-height, 100vh)', background: '#0f0f1a', color: 'white', fontFamily: 'system-ui, sans-serif' }}>
+      <div className="pos-topbar kitchen-topbar" style={{
         background: '#16213e', padding: '14px 18px', display: 'flex',
         justifyContent: 'space-between', alignItems: 'center',
         position: 'sticky', top: 0, zIndex: 50, boxShadow: '0 2px 12px rgba(0,0,0,.4)'
@@ -149,7 +163,7 @@ export default function KitchenPage() {
           <div style={{ fontWeight: 800, fontSize: 19 }}>🍳 ห้องครัว</div>
           <div style={{ opacity: .45, fontSize: 12 }}>{active.length} ออเดอร์รอดำเนินการ · {auth.user.full_name}</div>
         </div>
-        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+        <div className="kitchen-topbar-actions" style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
           <button onClick={togglePush}
                   title="เปิด/ปิดการแจ้งเตือน"
                   style={{ background: 'rgba(255,209,102,.15)', color: '#ffd166',
@@ -184,23 +198,24 @@ export default function KitchenPage() {
         </div>
       )}
 
-      <div style={{ padding: 14, maxWidth: 1280, margin: '0 auto' }}>
+      <div className="kitchen-content" style={{ padding: 14, maxWidth: 1280, margin: '0 auto' }}>
         {!active.length && (
           <div style={{ textAlign: 'center', opacity: .3, padding: '60px 0', fontSize: 16 }}>
             ไม่มีออเดอร์รอดำเนินการ 🎉
           </div>
         )}
 
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: 14 }}>
+        <div className="kitchen-order-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: 14 }}>
           {active.map((o) => {
             const stColor = STATUS_COLOR[o.status] || '#666';
             const next = NEXT_STATUS[o.status];
             const orderFulfillment = fulfillmentBadge(o);
             return (
               <div key={o.id}
+                   className="kitchen-order-card"
                    style={{ background: 'rgba(255,255,255,.04)', borderRadius: 16, padding: 16,
                             borderLeft: `4px solid ${stColor}` }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between',
+                <div className="kitchen-order-header" style={{ display: 'flex', justifyContent: 'space-between',
                               alignItems: 'center', marginBottom: 10 }}>
                   <div>
                     <span style={{ fontWeight: 800, fontSize: 18 }}>{o.table_name}</span>
@@ -258,7 +273,7 @@ export default function KitchenPage() {
                   </div>
                 )}
 
-                <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+                <div className="kitchen-order-actions" style={{ display: 'flex', gap: 8, marginTop: 12 }}>
                   {next && (
                     <button
                       onClick={() => changeStatus(o.id, next.value)}

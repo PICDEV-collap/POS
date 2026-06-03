@@ -1,0 +1,24 @@
+[Unit]
+Description=POS V2 Backend API
+Wants=network-online.target postgresql.service
+After=network-online.target postgresql.service
+
+[Service]
+Type=simple
+User=__APP_USER__
+Group=__APP_GROUP__
+WorkingDirectory=__INSTALL_DIR__/backend
+EnvironmentFile=__ETC_DIR__/backend.env
+ExecStart=/usr/bin/npm run start
+Restart=always
+RestartSec=3
+KillSignal=SIGTERM
+TimeoutStopSec=15
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=__INSTALL_DIR__ __DATA_DIR__ __LOG_DIR__
+SyslogIdentifier=pos-v2-backend
+
+[Install]
+WantedBy=multi-user.target

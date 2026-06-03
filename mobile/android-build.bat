@@ -13,8 +13,15 @@ REM Edit POS_API_BASE for your backend's LAN IP if running on a real device.
 set PROJECT=D:\POS_V2
 set MOBILE_DIR=%PROJECT%\mobile
 
-REM Default: emulator (10.0.2.2 = host PC's localhost from emulator's view)
-REM For real device, change this to http://<your-windows-LAN-IP>:4000
+REM Default resolution:
+REM   1) POS_API_BASE env var when explicitly provided
+REM   2) backend\.env PUBLIC_BASE_URL for release/mobile outside LAN
+REM   3) emulator fallback (10.0.2.2 = host PC localhost from emulator)
+if "%POS_API_BASE%"=="" if exist "%PROJECT%\backend\.env" (
+  for /f "usebackq tokens=1,* delims==" %%A in ("%PROJECT%\backend\.env") do (
+    if /I "%%A"=="PUBLIC_BASE_URL" if not "%%B"=="" set "POS_API_BASE=%%B"
+  )
+)
 if "%POS_API_BASE%"=="" set POS_API_BASE=http://10.0.2.2:4000
 
 if not exist "%MOBILE_DIR%\pubspec.yaml" (

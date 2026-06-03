@@ -71,7 +71,7 @@ class _AdminScreenState extends State<AdminScreen>
   @override
   void initState() {
     super.initState();
-    _tab = TabController(length: 7, vsync: this);
+    _tab = TabController(length: 8, vsync: this);
     _api = ApiService(context.read<AuthService>());
     context.read<SocketService>().connect();
   }
@@ -98,6 +98,7 @@ class _AdminScreenState extends State<AdminScreen>
   @override
   Widget build(BuildContext context) {
     final auth = context.watch<AuthService>();
+    final storeScopeKey = auth.activeStoreId ?? auth.user?.storeId ?? 1;
     return Scaffold(
       appBar: AppBar(
         title: Text(
@@ -121,6 +122,7 @@ class _AdminScreenState extends State<AdminScreen>
           unselectedLabelColor: Colors.white70,
           tabs: const [
             Tab(icon: Icon(Icons.dashboard, size: 18), text: 'ภาพรวม'),
+            Tab(icon: Icon(Icons.storefront, size: 18), text: 'ร้าน'),
             Tab(icon: Icon(Icons.list_alt, size: 18), text: 'ออเดอร์'),
             Tab(icon: Icon(Icons.fastfood, size: 18), text: 'เมนู'),
             Tab(icon: Icon(Icons.category, size: 18), text: 'หมวด'),
@@ -133,14 +135,287 @@ class _AdminScreenState extends State<AdminScreen>
       body: TabBarView(
         controller: _tab,
         children: [
-          _DashboardTab(api: _api),
-          _OrdersTab(api: _api),
-          _ProductsTab(api: _api),
-          _CategoriesTab(api: _api),
-          _TablesTab(api: _api),
-          _PrinterTab(api: _api),
-          _SettingsTab(api: _api),
+          KeyedSubtree(
+            key: ValueKey('dashboard-$storeScopeKey'),
+            child: _DashboardTab(api: _api),
+          ),
+          _StoresTab(api: _api),
+          KeyedSubtree(
+            key: ValueKey('orders-$storeScopeKey'),
+            child: _OrdersTab(api: _api),
+          ),
+          KeyedSubtree(
+            key: ValueKey('products-$storeScopeKey'),
+            child: _ProductsTab(api: _api),
+          ),
+          KeyedSubtree(
+            key: ValueKey('categories-$storeScopeKey'),
+            child: _CategoriesTab(api: _api),
+          ),
+          KeyedSubtree(
+            key: ValueKey('tables-$storeScopeKey'),
+            child: _TablesTab(api: _api),
+          ),
+          KeyedSubtree(
+            key: ValueKey('printer-$storeScopeKey'),
+            child: _PrinterTab(api: _api),
+          ),
+          KeyedSubtree(
+            key: ValueKey('settings-$storeScopeKey'),
+            child: _SettingsTab(api: _api),
+          ),
         ],
+      ),
+    );
+  }
+}
+
+// ─── Stores / branches ──────────────────────────────────────────────────
+class _StoresTab extends StatefulWidget {
+  final ApiService api;
+  const _StoresTab({required this.api});
+  @override
+  State<_StoresTab> createState() => _StoresTabState();
+}
+
+class _StoresTabState extends State<_StoresTab> {
+  List<PosStore> _stores = [];
+  bool _loading = true;
+  int? _deletingId;
+
+  @override
+  void initState() {
+    super.initState();
+    _reload();
+  }
+
+  Future<List<PosStore>> _reload() async {
+    try {
+      final list = await widget.api.stores();
+      if (!mounted) return list;
+      setState(() {
+        _stores = list;
+        _loading = false;
+      });
+      return list;
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(_friendlyStoreError(e))));
+        setState(() => _loading = false);
+      }
+      return _stores;
+    }
+  }
+
+  String _friendlyStoreError(Object e) {
+    final text = e.toString();
+    if (text.contains('cannot delete default store')) {
+      return 'ไม่สามารถลบร้านหลักได้';
+    }
+    if (text.contains('store is assigned to users')) {
+      return 'ร้านนี้ยังมีผู้ใช้งานผูกอยู่ ต้องย้ายผู้ใช้ก่อนลบ';
+    }
+    if (text.contains('store has transaction history')) {
+      return 'ร้านนี้มีประวัติขาย/สต๊อก/บัญชีแล้ว จึงลบถาวรไม่ได้';
+    }
+    if (text.contains('store has printer stations')) {
+      return 'ร้านนี้ยังมีจุดพิมพ์ที่ถูกใช้งานอยู่';
+    }
+    if (text.contains('store access forbidden')) {
+      return 'ไม่มีสิทธิ์จัดการร้านนี้';
+    }
+    return text;
+  }
+
+  Future<void> _selectStore(PosStore store) async {
+    await context.read<AuthService>().setActiveStoreId(store.id);
+    if (!mounted) return;
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text('กำลังจัดการร้าน "${store.name}"')));
+  }
+
+  Future<bool?> _confirmDelete(PosStore store) => showDialog<bool>(
+    context: context,
+    builder: (_) => AlertDialog(
+      title: const Text('ลบร้าน?'),
+      content: Text(
+        'ลบร้าน "${store.name}"?\n\nระบบจะลบเฉพาะร้านที่ยังไม่มีประวัติขาย/สต๊อก/บัญชีเท่านั้น และจะลบโต๊ะ QR หมวด และเมนูของร้านนี้ด้วย',
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context, false),
+          child: const Text('ยกเลิก'),
+        ),
+        ElevatedButton(
+          style: ElevatedButton.styleFrom(
+            backgroundColor: Colors.red,
+            foregroundColor: Colors.white,
+          ),
+          onPressed: () => Navigator.pop(context, true),
+          child: const Text('ลบ'),
+        ),
+      ],
+    ),
+  );
+
+  Future<void> _deleteStore(PosStore store) async {
+    if (store.isDefault) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('ไม่สามารถลบร้านหลักได้')));
+      return;
+    }
+    final auth = context.read<AuthService>();
+    final ok = await _confirmDelete(store);
+    if (!mounted) return;
+    if (ok != true) return;
+    setState(() => _deletingId = store.id);
+    try {
+      await widget.api.deleteStore(store.id);
+      final list = await _reload();
+      if (auth.activeStoreId == store.id) {
+        PosStore? next;
+        for (final candidate in list) {
+          if (candidate.isActive) {
+            next = candidate;
+            break;
+          }
+        }
+        next ??= list.isNotEmpty ? list.first : null;
+        if (next != null) await auth.setActiveStoreId(next.id);
+      }
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('ลบร้าน "${store.name}" แล้ว')));
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(_friendlyStoreError(e))));
+      }
+    } finally {
+      if (mounted) setState(() => _deletingId = null);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final activeStoreId = context.watch<AuthService>().activeStoreId;
+    if (_loading) return const Center(child: CircularProgressIndicator());
+    return RefreshIndicator(
+      onRefresh: _reload,
+      child: ListView.builder(
+        padding: const EdgeInsets.all(12),
+        itemCount: _stores.isEmpty ? 1 : _stores.length,
+        itemBuilder: (_, i) {
+          if (_stores.isEmpty) {
+            return const Padding(
+              padding: EdgeInsets.all(24),
+              child: Center(child: Text('ยังไม่มีร้านในระบบ')),
+            );
+          }
+          final store = _stores[i];
+          final isActiveStore = store.id == activeStoreId;
+          final deleting = _deletingId == store.id;
+          final user = context.read<AuthService>().user;
+          final canDeleteStore =
+              user?.isSuperAdmin == true && !AppConfig.isPublicRemoteBase;
+          return Card(
+            margin: const EdgeInsets.only(bottom: 10),
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: CircleAvatar(
+                      backgroundColor: isActiveStore
+                          ? _kNavy
+                          : Colors.grey[200],
+                      foregroundColor: isActiveStore ? _kGold : _kNavy,
+                      child: Text(
+                        (store.logo == null || store.logo!.isEmpty)
+                            ? '🏬'
+                            : store.logo!,
+                      ),
+                    ),
+                    title: Text(
+                      store.name,
+                      style: const TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    subtitle: Text(
+                      '${store.code} · #${store.id}\n${store.publicBaseUrl?.isNotEmpty == true ? store.publicBaseUrl! : "LAN/local only"}',
+                    ),
+                    isThreeLine: true,
+                    trailing: store.isDefault
+                        ? const Icon(Icons.lock, color: Colors.grey)
+                        : (store.isActive
+                              ? const Icon(
+                                  Icons.check_circle,
+                                  color: Color(0xFF05795C),
+                                )
+                              : const Icon(
+                                  Icons.pause_circle,
+                                  color: Colors.orange,
+                                )),
+                  ),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: ElevatedButton.icon(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: isActiveStore ? _kNavy : null,
+                            foregroundColor: isActiveStore
+                                ? Colors.white
+                                : null,
+                          ),
+                          onPressed: deleting
+                              ? null
+                              : () => _selectStore(store),
+                          icon: Icon(
+                            isActiveStore
+                                ? Icons.radio_button_checked
+                                : Icons.storefront,
+                          ),
+                          label: Text(
+                            isActiveStore
+                                ? 'กำลังจัดการร้านนี้'
+                                : 'จัดการร้านนี้',
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      OutlinedButton.icon(
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: Colors.red,
+                        ),
+                        onPressed:
+                            store.isDefault || deleting || !canDeleteStore
+                            ? null
+                            : () => _deleteStore(store),
+                        icon: deleting
+                            ? const SizedBox(
+                                width: 16,
+                                height: 16,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : const Icon(Icons.delete_outline),
+                        label: const Text('ลบ'),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
       ),
     );
   }
@@ -180,7 +455,7 @@ class _DashboardTabState extends State<_DashboardTab> {
 
   Future<void> _reload() async {
     try {
-      final list = await widget.api.listOrders();
+      final list = await widget.api.listOrders(includeDetails: false);
       if (!mounted) return;
       setState(() {
         _orders = list;
@@ -203,7 +478,37 @@ class _DashboardTabState extends State<_DashboardTab> {
       return Center(
         child: Padding(
           padding: const EdgeInsets.all(20),
-          child: Text(_err!, style: const TextStyle(color: Colors.red)),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                _err!,
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  color: Colors.red,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              const SizedBox(height: 12),
+              Text(
+                'Server: ${AppConfig.apiBase}\nBuild: ${AppConfig.buildLabel}',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 12, color: Colors.grey[700]),
+              ),
+              const SizedBox(height: 12),
+              OutlinedButton.icon(
+                onPressed: () {
+                  setState(() {
+                    _loading = true;
+                    _err = null;
+                  });
+                  _reload();
+                },
+                icon: const Icon(Icons.refresh),
+                label: const Text('ลองใหม่'),
+              ),
+            ],
+          ),
         ),
       );
     final today = DateFormat('yyyy-MM-dd').format(DateTime.now());
@@ -311,7 +616,7 @@ class _OrdersTabState extends State<_OrdersTab> {
 
   Future<void> _reload() async {
     try {
-      final list = await widget.api.listOrders();
+      final list = await widget.api.listOrders(includeDetails: false);
       if (!mounted) return;
       setState(() {
         _orders = list;
@@ -406,7 +711,7 @@ class _OrdersTabState extends State<_OrdersTab> {
                             ),
                           ),
                           title: Text(
-                            '${o.tableName} · ${o.items.length} รายการ',
+                            '${o.tableName} · ${o.itemCount} รายการ',
                             style: const TextStyle(fontWeight: FontWeight.bold),
                           ),
                           subtitle: Text(
@@ -462,6 +767,26 @@ class _ProductsTabState extends State<_ProductsTab> {
   void initState() {
     super.initState();
     _reload();
+    context.read<SocketService>().on('product:availability', _onAvailEvt);
+  }
+
+  @override
+  void dispose() {
+    context.read<SocketService>().off('product:availability', _onAvailEvt);
+    super.dispose();
+  }
+
+  void _onAvailEvt(dynamic payload) {
+    if (payload is! Map) return;
+    final id = payload['id'];
+    final avail = payload['is_available'];
+    if (id is! int || avail is! bool) return;
+    if (!mounted) return;
+    setState(() {
+      _products = _products
+          .map((p) => p.id == id ? p.copyWith(isAvailable: avail) : p)
+          .toList();
+    });
   }
 
   Future<void> _reload() async {
@@ -485,15 +810,50 @@ class _ProductsTabState extends State<_ProductsTab> {
     }
   }
 
+  Future<void> _openBarcodePrint(Product p) async {
+    if ((p.barcode ?? '').isEmpty) return;
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (_) => _BarcodePrintDialog(api: widget.api, product: p),
+    );
+    if (result == true && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('ส่งคิวพิมพ์ barcode "${p.name}" แล้ว')),
+      );
+    }
+  }
+
+  final Set<int> _availBusyIds = <int>{}; // double-tap guard per row
   Future<void> _toggleAvail(Product p) async {
+    if (_availBusyIds.contains(p.id)) return;
+    setState(() => _availBusyIds.add(p.id));
     try {
-      await widget.api.updateProduct(p.id, {'is_available': !p.isAvailable});
-      _reload();
+      final saved = await widget.api.setProductAvailability(
+        p.id,
+        isAvailable: !p.isAvailable,
+      );
+      final nextAvail = saved['is_available'] as bool? ?? !p.isAvailable;
+      if (!mounted) return;
+      setState(() {
+        _products = _products
+            .map((x) => x.id == p.id ? x.copyWith(isAvailable: nextAvail) : x)
+            .toList();
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(nextAvail
+              ? '${p.name} — เปิดขายแล้ว'
+              : '${p.name} — ปิดขาย (ของหมด)'),
+        ),
+      );
     } catch (e) {
-      if (mounted)
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text(e.toString())));
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('เปลี่ยนสถานะไม่สำเร็จ: $e')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _availBusyIds.remove(p.id));
     }
   }
 
@@ -566,6 +926,7 @@ class _ProductsTabState extends State<_ProductsTab> {
                             borderRadius: BorderRadius.circular(8),
                             child: Image.network(
                               widget.api.imageUrl(p.imageUrl),
+                              headers: AppConfig.tunnelHeaders,
                               width: 50,
                               height: 50,
                               fit: BoxFit.cover,
@@ -596,6 +957,8 @@ class _ProductsTabState extends State<_ProductsTab> {
                           _openEditor(p);
                         else if (v == 'avail')
                           _toggleAvail(p);
+                        else if (v == 'barcode')
+                          _openBarcodePrint(p);
                         else if (v == 'delete')
                           _delete(p);
                       },
@@ -604,6 +967,11 @@ class _ProductsTabState extends State<_ProductsTab> {
                           value: 'edit',
                           child: Text('✏️ แก้ไข'),
                         ),
+                        if ((p.barcode ?? '').isNotEmpty)
+                          const PopupMenuItem(
+                            value: 'barcode',
+                            child: Text('🖨 พิมพ์ barcode'),
+                          ),
                         PopupMenuItem(
                           value: 'avail',
                           child: Text(
@@ -1167,6 +1535,7 @@ class _ProductEditorState extends State<_ProductEditor> {
     } else if (_existingImageUrl != null) {
       child = Image.network(
         widget.api.imageUrl(_existingImageUrl),
+        headers: AppConfig.tunnelHeaders,
         width: 80,
         height: 80,
         fit: BoxFit.cover,
@@ -1440,6 +1809,7 @@ class _TablesTabState extends State<_TablesTab> {
   String? _publicBase; // from backend PUBLIC_BASE_URL
   bool _wifiOnlyQr = false;
   bool _rotatingAll = false;
+  final Set<int> _printingTableIds = <int>{}; // double-tap guard per-row
 
   @override
   void initState() {
@@ -1494,6 +1864,34 @@ class _TablesTabState extends State<_TablesTab> {
         context,
       ).showSnackBar(SnackBar(content: Text(e.toString())));
       setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _printQr(PosTable table, String url) async {
+    if (_printingTableIds.contains(table.id)) return; // double-tap guard
+    setState(() => _printingTableIds.add(table.id));
+    try {
+      await widget.api.printQrLabel(
+        url: url,
+        tableName: table.name,
+        tableCode: table.code,
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('ส่งคิวพิมพ์ QR "${table.name}" แล้ว')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('พิมพ์ไม่สำเร็จ: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _printingTableIds.remove(table.id));
     }
   }
 
@@ -1744,6 +2142,7 @@ class _TablesTabState extends State<_TablesTab> {
                           children: [
                             Image.network(
                               widget.api.qrUrl(url, size: 240),
+                              headers: AppConfig.tunnelHeaders,
                               height: 200,
                               errorBuilder: (_, __, ___) =>
                                   const Icon(Icons.qr_code_2, size: 100),
@@ -1757,32 +2156,66 @@ class _TablesTabState extends State<_TablesTab> {
                               ),
                             ),
                             const SizedBox(height: 12),
-                            Row(
-                              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                              children: [
-                                TextButton.icon(
-                                  icon: const Icon(Icons.refresh),
-                                  label: const Text('Rotate QR'),
-                                  onPressed: () => _rotate(t.id),
-                                ),
-                                TextButton.icon(
-                                  icon: const Icon(Icons.edit),
-                                  label: const Text('แก้ไข'),
-                                  onPressed: () => _openEditor(t),
-                                ),
-                                TextButton.icon(
-                                  icon: const Icon(
-                                    Icons.delete,
-                                    color: Colors.red,
+                            Builder(builder: (ctx) {
+                              final role = context
+                                  .read<AuthService>()
+                                  .user
+                                  ?.role;
+                              final canPrint = role == 'admin' ||
+                                  role == 'super_admin' ||
+                                  role == 'staff';
+                              final printing =
+                                  _printingTableIds.contains(t.id);
+                              return Wrap(
+                                spacing: 4,
+                                runSpacing: 4,
+                                alignment: WrapAlignment.spaceEvenly,
+                                children: [
+                                  if (canPrint)
+                                    TextButton.icon(
+                                      icon: printing
+                                          ? const SizedBox(
+                                              width: 14,
+                                              height: 14,
+                                              child:
+                                                  CircularProgressIndicator(
+                                                strokeWidth: 2,
+                                              ),
+                                            )
+                                          : const Icon(Icons.receipt_long),
+                                      label: Text(
+                                        printing
+                                            ? 'กำลังส่ง…'
+                                            : 'พิมพ์ QR',
+                                      ),
+                                      onPressed: printing
+                                          ? null
+                                          : () => _printQr(t, url),
+                                    ),
+                                  TextButton.icon(
+                                    icon: const Icon(Icons.refresh),
+                                    label: const Text('Rotate QR'),
+                                    onPressed: () => _rotate(t.id),
                                   ),
-                                  label: const Text(
-                                    'ลบ',
-                                    style: TextStyle(color: Colors.red),
+                                  TextButton.icon(
+                                    icon: const Icon(Icons.edit),
+                                    label: const Text('แก้ไข'),
+                                    onPressed: () => _openEditor(t),
                                   ),
-                                  onPressed: () => _delete(t),
-                                ),
-                              ],
-                            ),
+                                  TextButton.icon(
+                                    icon: const Icon(
+                                      Icons.delete,
+                                      color: Colors.red,
+                                    ),
+                                    label: const Text(
+                                      'ลบ',
+                                      style: TextStyle(color: Colors.red),
+                                    ),
+                                    onPressed: () => _delete(t),
+                                  ),
+                                ],
+                              );
+                            }),
                           ],
                         ),
                       ),
@@ -2709,6 +3142,173 @@ class _SettingsTabState extends State<_SettingsTab> {
                 ),
               ],
             ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _BarcodePrintDialog extends StatefulWidget {
+  final ApiService api;
+  final Product product;
+  const _BarcodePrintDialog({required this.api, required this.product});
+
+  @override
+  State<_BarcodePrintDialog> createState() => _BarcodePrintDialogState();
+}
+
+class _BarcodePrintDialogState extends State<_BarcodePrintDialog> {
+  List<Map<String, dynamic>> _stations = [];
+  String? _stationKey;
+  int _copies = 1;
+  bool _loading = true;
+  bool _sending = false;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadStations();
+  }
+
+  Future<void> _loadStations() async {
+    try {
+      final list = await widget.api.printStations();
+      if (!mounted) return;
+      final active = list
+          .where((s) => s['is_active'] == null || s['is_active'] == true)
+          .toList();
+      setState(() {
+        _stations = active;
+        _loading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _error = e.toString();
+        _loading = false;
+      });
+    }
+  }
+
+  Future<void> _send() async {
+    if (_sending) return;
+    setState(() {
+      _sending = true;
+      _error = null;
+    });
+    try {
+      await widget.api.printBarcodeLabel(
+        widget.product.id,
+        stationKey: _stationKey,
+        copies: _copies,
+      );
+      if (mounted) Navigator.pop(context, true);
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _error = e.toString();
+          _sending = false;
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text('🖨 พิมพ์ barcode · ${widget.product.name}'),
+      content: SizedBox(
+        width: 320,
+        child: _loading
+            ? const Padding(
+                padding: EdgeInsets.all(20),
+                child: Center(child: CircularProgressIndicator()),
+              )
+            : Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text(
+                    'Barcode: ${widget.product.barcode ?? '-'}',
+                    style: const TextStyle(color: Colors.grey),
+                  ),
+                  const SizedBox(height: 12),
+                  const Text(
+                    'เครื่องพิมพ์',
+                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
+                  ),
+                  const SizedBox(height: 4),
+                  DropdownButtonFormField<String?>(
+                    initialValue: _stationKey,
+                    decoration: const InputDecoration(
+                      isDense: true,
+                      border: OutlineInputBorder(),
+                    ),
+                    items: [
+                      const DropdownMenuItem<String?>(
+                        value: null,
+                        child: Text('(ค่าเริ่มต้นในระบบ)'),
+                      ),
+                      ..._stations.map((s) => DropdownMenuItem<String?>(
+                            value: s['key'] as String?,
+                            child: Text(
+                              '${s['name']} (${s['printer_key'] ?? s['printer_host'] ?? s['key']})',
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          )),
+                    ],
+                    onChanged: _sending
+                        ? null
+                        : (v) => setState(() => _stationKey = v),
+                  ),
+                  const SizedBox(height: 12),
+                  const Text(
+                    'จำนวน (1-8)',
+                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
+                  ),
+                  const SizedBox(height: 4),
+                  DropdownButtonFormField<int>(
+                    initialValue: _copies,
+                    decoration: const InputDecoration(
+                      isDense: true,
+                      border: OutlineInputBorder(),
+                    ),
+                    items: const [1, 2, 3, 4, 5, 6, 8]
+                        .map((n) =>
+                            DropdownMenuItem<int>(value: n, child: Text('$n')))
+                        .toList(),
+                    onChanged: _sending
+                        ? null
+                        : (v) => setState(() => _copies = v ?? 1),
+                  ),
+                  if (_error != null) ...[
+                    const SizedBox(height: 8),
+                    Text(_error!,
+                        style: const TextStyle(color: Colors.red, fontSize: 12)),
+                  ],
+                ],
+              ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: _sending ? null : () => Navigator.pop(context, false),
+          child: const Text('ยกเลิก'),
+        ),
+        ElevatedButton.icon(
+          onPressed: (_loading || _sending) ? null : _send,
+          icon: _sending
+              ? const SizedBox(
+                  width: 14,
+                  height: 14,
+                  child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                )
+              : const Icon(Icons.receipt_long),
+          label: Text(_sending ? 'กำลังส่ง...' : '🧾 ส่งคิวพิมพ์'),
+          style: ElevatedButton.styleFrom(
+            backgroundColor: _kNavy,
+            foregroundColor: Colors.white,
           ),
         ),
       ],

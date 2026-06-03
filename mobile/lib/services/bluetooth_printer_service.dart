@@ -133,7 +133,10 @@ class BluetoothPrinterService extends ChangeNotifier {
     _blineMm = p.getInt(_kBline) ?? 0;
     _paperType = p.getString(_kPaperType) ?? 'continuous';
     _autoPrintKitchen = p.getBool(_kAutoPrintKitchen) ?? false;
-    _autoPrintReceipt = p.getBool(_kAutoPrintReceipt) ?? false;
+    // Receipts are manual-only by policy; staff/admin print them from the
+    // explicit receipt button after payment/order review.
+    _autoPrintReceipt = false;
+    await p.setBool(_kAutoPrintReceipt, false);
     // v2 safe default: if an older build auto-selected TSPL, the printer may
     // print "SIZE/GAP/BITMAP" as text. Switch existing installs to ESC/POS
     // image once; users with true TSPL label printers can manually switch back.
@@ -155,12 +158,12 @@ class BluetoothPrinterService extends ChangeNotifier {
 
   Future<void> setAutoPrint({bool? kitchen, bool? receipt}) async {
     if (kitchen != null) _autoPrintKitchen = kitchen;
-    if (receipt != null) _autoPrintReceipt = receipt;
+    if (receipt != null) _autoPrintReceipt = false;
     final p = await SharedPreferences.getInstance();
     await p.setBool(_kAutoPrintKitchen, _autoPrintKitchen);
-    await p.setBool(_kAutoPrintReceipt, _autoPrintReceipt);
+    await p.setBool(_kAutoPrintReceipt, false);
     notifyListeners();
-    if (hasPrinter && (_autoPrintKitchen || _autoPrintReceipt)) {
+    if (hasPrinter && _autoPrintKitchen) {
       unawaited(warmUp());
     }
   }

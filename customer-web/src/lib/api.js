@@ -50,7 +50,7 @@ export const api = {
       ...locationHeaders(location),
     },
   }),
-  getMenu: () => request('/api/public/menu'),
+  getMenu: (token) => request(`/api/public/menu${token ? `?token=${encodeURIComponent(token)}` : ''}`),
   placeOrder: (token, items, note, opts = {}) =>
     request('/api/public/orders', {
       method: 'POST',

@@ -2,48 +2,100 @@
 
 import { Suspense, useState, useEffect } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { login, getAuth } from '@/lib/auth';
+import { login, loginStores, getAuth } from '@/lib/auth';
 
 export default function LoginPageWrapper() {
   return (
-    <Suspense fallback={<div className="min-h-screen flex items-center justify-center">กำลังโหลด...</div>}>
+    <Suspense fallback={
+      <div className="login-shell">
+        <div style={{ color: '#fff', fontSize: 14, opacity: .8 }}>กำลังโหลด...</div>
+      </div>
+    }>
       <LoginPage />
     </Suspense>
   );
 }
 
 const ROLE_HOME = {
+  super_admin: '/admin',
   admin: '/admin',
+  staff: '/staff',
   kitchen: '/kitchen',
 };
+
+const ROLE_ALLOWED_NEXT = {
+  super_admin: ['/admin'],
+  admin: ['/admin'],
+  staff: ['/staff'],
+  kitchen: ['/kitchen'],
+};
+
+function isAllowedNext(next, prefixes) {
+  if (!next || !next.startsWith('/') || next.startsWith('//')) return false;
+  return prefixes.some((prefix) => (
+    next === prefix || next.startsWith(`${prefix}/`) || next.startsWith(`${prefix}?`)
+  ));
+}
+
+function destinationForRole(role, next) {
+  const allowedNext = ROLE_ALLOWED_NEXT[role] || [];
+  if (isAllowedNext(next, allowedNext)) return next;
+  return ROLE_HOME[role] || '/';
+}
 
 function LoginPage() {
   const router = useRouter();
   const params = useSearchParams();
   const next = params.get('next');
-  const isStaffLogin = next?.startsWith('/staff');
 
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [stores, setStores] = useState([]);
+  const [selectedStoreId, setSelectedStoreId] = useState('');
+  const [loadingStores, setLoadingStores] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
 
   useEffect(() => {
-    if (isStaffLogin) {
-      router.replace('/staff');
-      return;
-    }
     const auth = getAuth();
-    if (auth) router.replace(next || ROLE_HOME[auth.user.role] || '/');
-  }, [router, next, isStaffLogin]);
+    if (auth) router.replace(destinationForRole(auth.user.role, next));
+  }, [router, next]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadStores() {
+      setLoadingStores(true);
+      try {
+        const list = await loginStores();
+        if (cancelled) return;
+        const active = list.filter((store) => store.is_active !== false);
+        setStores(active);
+        setSelectedStoreId((current) => (
+          active.some((store) => String(store.id) === String(current))
+            ? current
+            : (active[0]?.id ? String(active[0].id) : '')
+        ));
+        setLoadingStores(false);
+      } catch (e) {
+        if (cancelled) return;
+        setStores([]);
+        setSelectedStoreId('');
+        setLoadingStores(false);
+        setError(e.message);
+      }
+    }
+    loadStores();
+    return () => { cancelled = true; };
+  }, []);
 
   async function submit(e) {
     e.preventDefault();
     setSubmitting(true);
     setError(null);
     try {
-      const data = await login(username, password);
-      router.replace(next || ROLE_HOME[data.user.role] || '/');
+      if (!selectedStoreId) throw new Error('กรุณาเลือกร้านก่อนเข้าสู่ระบบ');
+      const data = await login(username, password, selectedStoreId);
+      router.replace(destinationForRole(data.user.role, next));
     } catch (e) {
       setError(e.message);
       setSubmitting(false);
@@ -51,52 +103,75 @@ function LoginPage() {
   }
 
   return (
-    <main className="min-h-screen flex items-center justify-center p-4"
-          style={{ background: 'linear-gradient(135deg,#1a1a2e,#16213e)' }}>
-      <form onSubmit={submit}
-            className="w-full max-w-sm bg-white rounded-2xl p-6 shadow-2xl">
-        <div className="text-center mb-6">
-          <div className="text-3xl mb-2">🍽️</div>
-          <h1 className="text-xl font-extrabold" style={{ color: '#1a1a2e' }}>
-            POS V2
-          </h1>
-          <p className="text-xs text-gray-500 mt-1">
-            เข้าสู่ระบบสำหรับครัว / แอดมิน
-          </p>
+    <main className="login-shell">
+      <form onSubmit={submit} className="login-card">
+        <div className="login-head">
+          <div className="login-logo">🍽️</div>
+          <h1>POS V2</h1>
+          <p>เข้าสู่ระบบสำหรับ แอดมิน / พนักงาน / ครัว</p>
         </div>
 
-        <label className="block text-xs font-bold text-gray-600 mb-1">ชื่อผู้ใช้</label>
-        <input
-          autoFocus
-          value={username}
-          onChange={(e) => setUsername(e.target.value)}
-          className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 mb-3 outline-none focus:border-gray-800"
-          placeholder="admin / kitchen"
-        />
+        <div className="login-field">
+          <label className="login-label" htmlFor="login-store">เลือกร้านที่จะจัดการ</label>
+          <select
+            id="login-store"
+            value={selectedStoreId}
+            onChange={(e) => setSelectedStoreId(e.target.value)}
+            disabled={loadingStores || submitting}
+            className="login-input"
+          >
+            {loadingStores && <option value="">กำลังโหลดรายชื่อร้าน...</option>}
+            {!loadingStores && stores.length === 0 && <option value="">ยังโหลดรายชื่อร้านไม่ได้</option>}
+            {!loadingStores && stores.map((store) => (
+              <option key={store.id} value={store.id}>
+                {(store.logo || 'ร้าน')} {store.name} (#{store.id})
+              </option>
+            ))}
+          </select>
+        </div>
 
-        <label className="block text-xs font-bold text-gray-600 mb-1">รหัสผ่าน</label>
-        <input
-          type="password"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 mb-4 outline-none focus:border-gray-800"
-          placeholder="••••••••"
-        />
+        <div className="login-field">
+          <label className="login-label" htmlFor="login-user">ชื่อผู้ใช้</label>
+          <input
+            id="login-user"
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            className="login-input"
+            placeholder="admin / staff / kitchen"
+            autoComplete="username"
+            inputMode="text"
+            autoCapitalize="none"
+            autoCorrect="off"
+            spellCheck={false}
+          />
+        </div>
 
-        {error && <p className="text-sm text-red-600 mb-3">{error}</p>}
+        <div className="login-field">
+          <label className="login-label" htmlFor="login-pass">รหัสผ่าน</label>
+          <input
+            id="login-pass"
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            className="login-input"
+            placeholder="••••••••"
+            autoComplete="current-password"
+          />
+        </div>
+
+        {error && <p className="login-error">{error}</p>}
 
         <button
-          disabled={submitting}
-          className="w-full text-white font-bold py-3 rounded-xl disabled:opacity-50"
-          style={{ background: 'linear-gradient(135deg,#1a1a2e,#203a43)' }}
+          type="submit"
+          disabled={submitting || loadingStores || !selectedStoreId}
+          className="login-submit"
         >
           {submitting ? 'กำลังเข้าสู่ระบบ...' : 'เข้าสู่ระบบ'}
         </button>
 
-        <div className="mt-5 pt-4 border-t border-gray-100 text-xs text-gray-500 leading-relaxed">
-          <div className="font-bold mb-1">บัญชีทดสอบ:</div>
-          <div>admin / admin123</div>
-          <div>kitchen / kitchen123</div>
+        <div className="login-hint">
+          <b>บัญชีทดสอบ</b><br />
+          admin / admin123 · kitchen / kitchen123
         </div>
       </form>
     </main>

@@ -2,6 +2,8 @@
 
 ใช้ runbook นี้เมื่อจะ deploy บน Windows 11 server จริง
 
+สำหรับ Raspberry Pi / ร้านสาขาใหม่แบบติดตั้งครั้งเดียว ดู `deploy/raspberry-pi/README.md`
+
 ## สิ่งที่ต้องเตรียม
 
 | Item | Why |

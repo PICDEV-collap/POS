@@ -7,6 +7,7 @@ const printer = require('../printer');
 const { loadSettings } = require('./settings');
 const logger = require('../lib/logger');
 const { attachNormalizedMenus, validateSelectedOptions } = require('../lib/menuModel');
+const { resolveStoreId, storePredicate } = require('../lib/storeScope');
 
 const router = express.Router();
 const BUSINESS_TZ = 'Asia/Bangkok';
@@ -17,7 +18,7 @@ const BUSINESS_TZ = 'Asia/Bangkok';
 async function maybeAutoPrint(order) {
   const jobs = [];
   try {
-    const s = await loadSettings();
+    const s = await loadSettings(order?.store_id);
     const cfg = printer.printerConfig();
     const serverAutoEnabled = String(process.env.SERVER_AUTO_PRINT_ENABLED || 'true').toLowerCase() !== 'false';
     if (!serverAutoEnabled || !cfg.enabled) {
@@ -34,12 +35,10 @@ async function maybeAutoPrint(order) {
       jobs.push(...stationJobs);
     }
     if (s.auto_print_receipt) {
-      jobs.push(await printer.queueOrderReceipt(order, {
-        createdBy: null,
-        restaurantName: s.name,
-        paymentSettings: s,
-        dedupeKey: `order:${order.id}:receipt`,
-      }));
+      logger.info('auto-print', 'receipt auto-print skipped by policy; staff/admin must print manually', {
+        order_id: order?.id,
+        store_id: order?.store_id,
+      });
     }
   } catch (e) {
     logger.warn('auto-print', 'failed to queue auto print job', {
@@ -51,8 +50,10 @@ async function maybeAutoPrint(order) {
   return jobs;
 }
 
-async function loadPrintStations() {
+async function loadPrintStations(storeId = 1, { activeOnly = true } = {}) {
   try {
+    const params = [storeId || 1];
+    const activeFilter = activeOnly ? 'AND is_active = TRUE' : '';
     const { rows } = await db.query(
       `SELECT key, name, station_type, printer_key, printer_host, printer_port,
               width_chars, thai_cp, render_mode,
@@ -60,8 +61,9 @@ async function loadPrintStations() {
               feed_lines, bottom_feed_px, raster_band_height, cut_mode,
               is_active, sort_order
          FROM print_stations
-        WHERE is_active = TRUE
-        ORDER BY sort_order, key`
+        WHERE store_id = $1 ${activeFilter}
+        ORDER BY sort_order, key`,
+      params
     );
     return rows;
   } catch (e) {
@@ -82,13 +84,15 @@ function stationKeyForItem(item) {
 }
 
 async function queueKitchenStationPrints(order, opts = {}) {
-  const stations = await loadPrintStations();
-  const stationMap = new Map(stations.map((s) => [s.key, s]));
-  const fallbackStation = stationMap.get('kitchen') || {
+  const allStations = await loadPrintStations(order?.store_id || 1, { activeOnly: false });
+  const activeStations = allStations.filter((s) => s.is_active !== false);
+  const stationMap = new Map(allStations.map((s) => [s.key, s]));
+  const activeStationMap = new Map(activeStations.map((s) => [s.key, s]));
+  const fallbackStation = activeStationMap.get('kitchen') || (allStations.length ? null : {
     key: 'kitchen',
     name: 'ครัว / อาหาร',
     station_type: 'kitchen',
-  };
+  });
   const groups = new Map();
   for (const item of order.items || []) {
     const key = stationKeyForItem(item);
@@ -97,7 +101,26 @@ async function queueKitchenStationPrints(order, opts = {}) {
   }
   const jobs = [];
   for (const [key, items] of groups.entries()) {
-    const station = stationMap.get(key) || fallbackStation;
+    const configuredStation = stationMap.get(key);
+    if (configuredStation && configuredStation.is_active === false) {
+      logger.info('auto-print', 'kitchen station skipped because zone is disabled', {
+        order_id: order?.id,
+        store_id: order?.store_id,
+        station_key: key,
+        items_count: items.length,
+      });
+      continue;
+    }
+    const station = activeStationMap.get(key) || (!stationMap.has(key) ? fallbackStation : null);
+    if (!station) {
+      logger.info('auto-print', 'kitchen station skipped because no active zone is available', {
+        order_id: order?.id,
+        store_id: order?.store_id,
+        station_key: key,
+        items_count: items.length,
+      });
+      continue;
+    }
     const stationOrder = {
       ...order,
       items,
@@ -114,16 +137,19 @@ async function queueKitchenStationPrints(order, opts = {}) {
   return jobs;
 }
 
-async function loadOrder(id) {
+async function loadOrder(id, storeId = null) {
+  const params = [id];
+  const storeFilter = storeId ? 'AND o.store_id = $2' : '';
+  if (storeId) params.push(storeId);
   const o = await db.query(
     `SELECT o.id, o.table_id, t.code AS table_code, t.name AS table_name,
-            o.business_date, o.daily_seq,
+            o.store_id, o.business_date, o.daily_seq,
             o.status, o.total_amount, o.note, o.source,
             o.order_type, o.customer_name, o.customer_session_id,
             o.created_at, o.updated_at
        FROM orders o JOIN tables t ON t.id = o.table_id
-      WHERE o.id = $1`,
-    [id]
+      WHERE o.id = $1 ${storeFilter}`,
+    params
   );
   if (!o.rows[0]) return null;
   const items = await db.query(
@@ -154,22 +180,22 @@ function fulfillmentSummary(items = [], orderType = 'dine-in') {
   return types.has('takeaway') ? 'takeaway' : 'dine-in';
 }
 
-async function allocateDailySequence(client) {
+async function allocateDailySequence(client, storeId) {
   const { rows } = await client.query(
-    `INSERT INTO order_daily_sequences (business_date, last_seq, updated_at)
-     VALUES ((NOW() AT TIME ZONE $1)::date, 1, NOW())
-     ON CONFLICT (business_date) DO UPDATE
+    `INSERT INTO order_daily_sequences (store_id, business_date, last_seq, updated_at)
+     VALUES ($1, (NOW() AT TIME ZONE $2)::date, 1, NOW())
+     ON CONFLICT (store_id, business_date) DO UPDATE
         SET last_seq = order_daily_sequences.last_seq + 1,
             updated_at = NOW()
      RETURNING business_date, last_seq AS daily_seq`,
-    [BUSINESS_TZ]
+    [storeId || 1, BUSINESS_TZ]
   );
   return rows[0];
 }
 
 async function createOrder({
   table_id, items, note, source, created_by, order_type,
-  customer_name, customer_session_id,
+  customer_name, customer_session_id, store_id,
 }) {
   if (!table_id || !Array.isArray(items) || items.length === 0) {
     const err = new Error('table_id and items required');
@@ -178,12 +204,33 @@ async function createOrder({
   }
   const requestedOrderType = normalizeOrderType(order_type);
 
+  const tableResult = await db.query(
+    `SELECT id, store_id, is_active
+       FROM tables
+      WHERE id = $1`,
+    [table_id]
+  );
+  const table = tableResult.rows[0];
+  if (!table || table.is_active === false) {
+    const err = new Error('invalid table');
+    err.status = 400;
+    throw err;
+  }
+  const storeId = table.store_id || 1;
+  if (store_id && Number(store_id) !== Number(storeId)) {
+    const err = new Error('store access forbidden');
+    err.status = 403;
+    throw err;
+  }
+
   const productIds = items.map((it) => it.product_id);
   const { rows: rawProducts } = await db.query(
-    `SELECT id, name, price, cost_price, is_available, variants, options,
+    `SELECT id, store_id, name, price, cost_price, is_available, variants, options,
             product_type, barcode, track_stock, stock_qty, print_station_key
-       FROM products WHERE id = ANY($1::int[])`,
-    [productIds]
+       FROM products
+      WHERE id = ANY($1::int[])
+        AND store_id = $2`,
+    [productIds, storeId]
   );
   const products = await attachNormalizedMenus(db, rawProducts);
   const byId = new Map(products.map((p) => [p.id, p]));
@@ -245,11 +292,11 @@ async function createOrder({
     }
     await client.query(
       `INSERT INTO stock_movements
-         (movement_key, product_id, order_id, order_item_id, movement_type,
+         (store_id, movement_key, product_id, order_id, order_item_id, movement_type,
           quantity_delta, stock_after, note, created_by)
-       VALUES ($1, $2, $3, $4, 'sale', $5, $6, $7, $8)
+       VALUES ($1, $2, $3, $4, $5, 'sale', $6, $7, $8, $9)
        ON CONFLICT (movement_key) DO NOTHING`,
-      [`sale:item:${orderItemId}`, product.id, orderId, orderItemId,
+      [product.store_id || storeId, `sale:item:${orderItemId}`, product.id, orderId, orderItemId,
        -Number(quantity), rows[0].stock_qty, 'order created', created_by || null]
     );
   }
@@ -262,14 +309,14 @@ async function createOrder({
   const client = await db.getClient();
   try {
     await client.query('BEGIN');
-    const seq = await allocateDailySequence(client);
+    const seq = await allocateDailySequence(client, storeId);
     const { rows: orderRows } = await client.query(
       `INSERT INTO orders
-         (table_id, business_date, daily_seq, status, total_amount, note, source,
+         (store_id, table_id, business_date, daily_seq, status, total_amount, note, source,
           created_by, order_type, customer_name, customer_session_id)
-       VALUES ($1, $2, $3, 'pending', $4, $5, $6, $7, $8, $9, $10)
+       VALUES ($1, $2, $3, $4, 'pending', $5, $6, $7, $8, $9, $10, $11)
        RETURNING id`,
-      [table_id, seq.business_date, seq.daily_seq, total.toFixed(2), note || null,
+      [storeId, table_id, seq.business_date, seq.daily_seq, total.toFixed(2), note || null,
        source || 'customer', created_by || null, orderType, customer_name || null,
        customer_session_id || null]
     );
@@ -312,12 +359,12 @@ async function restoreStockForItems(client, itemRows, movementType, createdBy) {
     const movementKey = `restore:item:${row.id}`;
     const inserted = await client.query(
       `INSERT INTO stock_movements
-         (movement_key, product_id, order_id, order_item_id, movement_type,
+         (store_id, movement_key, product_id, order_id, order_item_id, movement_type,
           quantity_delta, note, created_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        ON CONFLICT (movement_key) DO NOTHING
        RETURNING id`,
-      [movementKey, row.product_id, row.order_id, row.id, movementType,
+      [row.store_id || 1, movementKey, row.product_id, row.order_id, row.id, movementType,
        Number(row.quantity), 'order/item cancelled', createdBy || null]
     );
     if (!inserted.rows[0]) continue;
@@ -337,9 +384,10 @@ async function restoreStockForItems(client, itemRows, movementType, createdBy) {
 
 async function restoreStockForOrder(client, orderId, movementType, createdBy) {
   const { rows } = await client.query(
-    `SELECT oi.id, oi.order_id, oi.product_id, oi.quantity,
+    `SELECT oi.id, oi.order_id, oi.product_id, oi.quantity, o.store_id,
             p.product_type, p.track_stock
        FROM order_items oi
+       JOIN orders o ON o.id = oi.order_id
        LEFT JOIN products p ON p.id = oi.product_id
       WHERE oi.order_id = $1`,
     [orderId]
@@ -351,13 +399,15 @@ async function restoreStockForOrder(client, orderId, movementType, createdBy) {
 router.get('/', authRequired, async (req, res) => {
   const { status } = req.query;
   const params = [];
-  let where = '';
-  if (status) { params.push(status); where = `WHERE o.status = $${params.length}`; }
+  const filters = [storePredicate(req, 'o', params)];
+  if (status) { params.push(status); filters.push(`o.status = $${params.length}`); }
+  const where = `WHERE ${filters.join(' AND ')}`;
   const { rows } = await db.query(
     `SELECT o.id, o.table_id, t.code AS table_code, t.name AS table_name,
-            o.business_date, o.daily_seq,
+            o.store_id, o.business_date, o.daily_seq,
             o.status, o.total_amount, o.note, o.source,
             o.order_type, o.customer_name,
+            (SELECT COUNT(*)::int FROM order_items oi WHERE oi.order_id = o.id) AS item_count,
             COALESCE((
               SELECT CASE
                 WHEN COUNT(DISTINCT COALESCE(oi.fulfillment_type, o.order_type)) > 1 THEN 'mixed'
@@ -376,7 +426,7 @@ router.get('/', authRequired, async (req, res) => {
 });
 
 router.get('/:id', authRequired, async (req, res) => {
-  const order = await loadOrder(req.params.id);
+  const order = await loadOrder(req.params.id, resolveStoreId(req));
   if (!order) return res.status(404).json({ error: 'not found' });
   res.json(order);
 });
@@ -387,7 +437,7 @@ router.post('/', authRequired, requireRole('staff', 'admin'), async (req, res, n
     const { table_id, items, note, order_type, customer_name } = req.body || {};
     const order = await createOrder({
       table_id, items, note, source: 'staff', created_by: req.user.sub,
-      order_type, customer_name,
+      order_type, customer_name, store_id: resolveStoreId(req),
     });
     emit('order:new', order);
     notifyKitchen(order);
@@ -414,7 +464,10 @@ router.patch('/:id/status', authRequired, requireRole('staff', 'admin', 'kitchen
   const client = await db.getClient();
   try {
     await client.query('BEGIN');
-    const before = await client.query('SELECT id, status FROM orders WHERE id = $1 FOR UPDATE', [req.params.id]);
+    const before = await client.query(
+      'SELECT id, status FROM orders WHERE id = $1 AND store_id = $2 FOR UPDATE',
+      [req.params.id, resolveStoreId(req)]
+    );
     if (!before.rows[0]) {
       await client.query('ROLLBACK');
       return res.status(404).json({ error: 'not found' });
@@ -433,7 +486,7 @@ router.patch('/:id/status', authRequired, requireRole('staff', 'admin', 'kitchen
   } finally {
     client.release();
   }
-  const order = await loadOrder(req.params.id);
+  const order = await loadOrder(req.params.id, resolveStoreId(req));
   emit('order:update', order);
   res.json(order);
 });
@@ -448,13 +501,15 @@ router.patch('/items/:itemId/status', authRequired, requireRole('staff', 'admin'
   try {
     await client.query('BEGIN');
     const before = await client.query(
-      `SELECT oi.id, oi.order_id, oi.product_id, oi.quantity, oi.status,
+      `SELECT oi.id, oi.order_id, oi.product_id, oi.quantity, oi.status, o.store_id,
               p.product_type, p.track_stock
          FROM order_items oi
+         JOIN orders o ON o.id = oi.order_id
          LEFT JOIN products p ON p.id = oi.product_id
         WHERE oi.id = $1
+          AND o.store_id = $2
         FOR UPDATE OF oi`,
-      [req.params.itemId]
+      [req.params.itemId, resolveStoreId(req)]
     );
     if (!before.rows[0]) {
       await client.query('ROLLBACK');
@@ -472,7 +527,7 @@ router.patch('/items/:itemId/status', authRequired, requireRole('staff', 'admin'
   } finally {
     client.release();
   }
-  const order = await loadOrder(orderId);
+  const order = await loadOrder(orderId, resolveStoreId(req));
   emit('order:update', order);
   res.json(order);
 });

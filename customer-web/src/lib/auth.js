@@ -4,6 +4,7 @@ import { apiBase } from './api';
 import { storageGet, storageSet, storageRemove } from './browser';
 
 const KEY = 'pos_v2_auth';
+const STORE_KEY = 'pos_v2_active_store_id';
 
 export function getAuth() {
   if (typeof window === 'undefined') return null;
@@ -19,15 +20,57 @@ export function setAuth(auth) {
   else storageRemove(KEY);
 }
 
-export function clearAuth() { setAuth(null); }
+export function clearAuth() {
+  setAuth(null);
+  if (typeof window !== 'undefined') storageRemove(STORE_KEY);
+}
 
-export async function login(username, password) {
+export function getActiveStoreId(fallback = 1) {
+  if (typeof window === 'undefined') return fallback || 1;
+  const raw = storageGet(STORE_KEY);
+  const id = Number(raw);
+  if (Number.isInteger(id) && id > 0) return id;
+  const fb = Number(fallback || getAuth()?.user?.store_id || 1);
+  return Number.isInteger(fb) && fb > 0 ? fb : 1;
+}
+
+export function setActiveStoreId(storeId) {
+  if (typeof window === 'undefined') return;
+  const id = Number(storeId);
+  if (Number.isInteger(id) && id > 0) storageSet(STORE_KEY, String(id));
+  else storageRemove(STORE_KEY);
+}
+
+export function activeStoreHeaders(auth = getAuth()) {
+  const storeId = getActiveStoreId(auth?.user?.store_id || 1);
+  return storeId ? { 'X-POS-Store-ID': String(storeId) } : {};
+}
+
+export async function loginStores() {
+  const res = await fetch(`${apiBase}/api/auth/stores`, {
+    method: 'GET',
+    cache: 'no-store',
+    credentials: apiBase ? 'omit' : 'same-origin',
+  });
+  if (!res.ok) {
+    let msg = 'load stores failed';
+    try { const b = await res.json(); if (b.error) msg = b.error; } catch {}
+    throw new Error(msg);
+  }
+  return res.json();
+}
+
+export async function login(username, password, storeId = null) {
   const res = await fetch(`${apiBase}/api/auth/login`, {
     method: 'POST',
     cache: 'no-store',
     credentials: apiBase ? 'omit' : 'same-origin',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, password }),
+    body: JSON.stringify({
+      username,
+      password,
+      ...(storeId ? { store_id: Number(storeId) } : {}),
+    }),
   });
   if (!res.ok) {
     let msg = 'login failed';
@@ -36,12 +79,17 @@ export async function login(username, password) {
   }
   const data = await res.json();
   setAuth(data);
+  setActiveStoreId(data.user?.store_id || 1);
   return data;
 }
 
 export async function ensureStaffAuth() {
   const current = getAuth();
-  if (current?.token && (current.user?.role === 'staff' || current.user?.role === 'admin')) {
+  if (current?.token && (
+    current.user?.role === 'staff'
+    || current.user?.role === 'admin'
+    || current.user?.role === 'super_admin'
+  )) {
     return current;
   }
   const res = await fetch(`${apiBase}/api/auth/staff-session`, {
@@ -57,6 +105,7 @@ export async function ensureStaffAuth() {
   }
   const data = await res.json();
   setAuth(data);
+  setActiveStoreId(data.user?.store_id || 1);
   return data;
 }
 
@@ -72,6 +121,7 @@ export async function authFetch(path, opts = {}) {
     headers: {
       ...(hasBody && !isFormData ? { 'Content-Type': 'application/json' } : {}),
       Authorization: `Bearer ${auth.token}`,
+      ...activeStoreHeaders(auth),
       ...(opts.headers || {}),
     },
   });

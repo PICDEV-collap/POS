@@ -1,10 +1,13 @@
 'use client';
 
 import { useEffect, useMemo, useState, useCallback } from 'react';
-import { ensureStaffAuth, authFetch } from '@/lib/auth';
+import { useRouter } from 'next/navigation';
+import { getAuth, authFetch, clearAuth } from '@/lib/auth';
 import { apiBase } from '@/lib/api';
 import { useRealtimeRecovery } from '@/lib/realtimeRecovery';
+import { ensureSocketConnected } from '@/lib/socket';
 import { storageGet } from '@/lib/browser';
+import { openQrPrintWindow } from '@/lib/printQr';
 
 const STATUS_LABEL = {
   pending: 'รอยืนยัน', cooking: 'กำลังทำ', served: 'เสิร์ฟแล้ว', paid: 'ชำระแล้ว', cancelled: 'ยกเลิก',
@@ -43,7 +46,30 @@ function localQrRoot() {
   return trimOrderRoot(apiOrigin || origin);
 }
 
+function lanWebRootFromDiscovery(info) {
+  const addresses = Array.isArray(info?.addresses) ? info.addresses : [];
+  const lanIp = addresses.find((ip) => isLanLikeUrl(`http://${ip}`));
+  return lanIp ? `http://${lanIp}:3000` : '';
+}
+
+function urlHost(value) {
+  try {
+    return new URL(trimOrderRoot(value)).host.toLowerCase();
+  } catch {
+    return '';
+  }
+}
+
+function isStaleQrBase(stored, currentLanRoot, currentPublicRoot) {
+  if (!stored) return false;
+  if (isLanLikeUrl(stored) && currentLanRoot) {
+    return urlHost(stored) !== urlHost(currentLanRoot);
+  }
+  return !isLanLikeUrl(stored) && !!currentPublicRoot && isLanLikeUrl(currentPublicRoot);
+}
+
 export default function StaffPage() {
+  const router = useRouter();
   const [auth, setAuthState] = useState(null);
 
   const [tables, setTables] = useState([]);
@@ -68,23 +94,26 @@ export default function StaffPage() {
     (async () => {
       let base = null;
       let settings = null;
-      try {
-        const stored = storageGet('pos_v2_qr_base');
-        if (stored) base = trimOrderRoot(stored);
-      } catch {}
+      let discoveryLanRoot = null;
+      let publicRoot = null;
       try {
         settings = await fetch(`${apiBase}/api/settings`, { cache: 'no-store' }).then((r) => r.json());
       } catch {}
       const wifiOnly = !!settings?.ordering_require_private_ip;
       setQrWifiOnly(wifiOnly);
-      if (wifiOnly && (!base || !isLanLikeUrl(base))) base = localQrRoot();
-      if (!base) {
-        try {
-          const res = await fetch(`${apiBase}/api/discovery/info`);
-          const j = await res.json();
-          if (j.public_base_url) base = trimOrderRoot(j.public_base_url);
-        } catch {}
-      }
+      try {
+        const res = await fetch(`${apiBase}/api/discovery/info`);
+        const j = await res.json();
+        if (j.public_base_url) publicRoot = trimOrderRoot(j.public_base_url);
+        discoveryLanRoot = trimOrderRoot(lanWebRootFromDiscovery(j));
+      } catch {}
+      const stored = trimOrderRoot(storageGet('pos_v2_qr_base'));
+      const currentLanRoot = discoveryLanRoot || localQrRoot();
+      const currentPublicRoot = publicRoot || currentLanRoot;
+      const usableStored = isStaleQrBase(stored, currentLanRoot, currentPublicRoot) ? '' : stored;
+      base = wifiOnly
+        ? (usableStored && isLanLikeUrl(usableStored) ? usableStored : currentLanRoot)
+        : (usableStored || currentPublicRoot);
       if (!base && typeof window !== 'undefined') base = window.location.origin;
       setQrBase(trimOrderRoot(base));
     })();
@@ -102,17 +131,58 @@ export default function StaffPage() {
 
   useRealtimeRecovery(reloadOrders, { intervalMs: 12000 });
 
+  // Refetch menu when product:availability fires. Uses the same hook as
+  // orders sync — proven to survive socket rebuilds, browser tab resume,
+  // and network blips. The hook also polls every 15 s as a safety net so
+  // we never get permanently stuck on stale data.
+  const reloadMenu = useCallback(async () => {
+    try {
+      const m = await fetch(`${apiBase}/api/public/menu?include_unavailable=1`, {
+        cache: 'no-store',
+        credentials: apiBase ? 'omit' : 'same-origin',
+      }).then((r) => r.json());
+      setMenu((prev) => ({
+        ...prev,
+        categories: m.categories || prev.categories,
+        products: m.products || prev.products,
+      }));
+    } catch (_e) { /* keep stale on fail */ }
+  }, []);
+  useRealtimeRecovery(reloadMenu, {
+    events: ['product:availability'],
+    intervalMs: 5000,
+    reloadOnMount: false,
+  });
+
   useEffect(() => {
     let cancelled = false;
 
     (async () => {
       try {
-        const a = await ensureStaffAuth();
+        const a = getAuth();
+        if (!a?.token) {
+          router.replace('/login?next=/staff');
+          return;
+        }
+        const role = a.user?.role;
+        if (role === 'kitchen') {
+          router.replace('/kitchen');
+          return;
+        }
+        if (role === 'admin' || role === 'super_admin') {
+          router.replace('/admin');
+          return;
+        }
+        if (role !== 'staff') {
+          clearAuth();
+          router.replace('/login?next=/staff');
+          return;
+        }
         if (cancelled) return;
         setAuthState(a);
         const [t, m] = await Promise.all([
           authFetch('/api/tables'),
-          fetch(`${apiBase}/api/public/menu`, {
+          fetch(`${apiBase}/api/public/menu?include_unavailable=1`, {
             cache: 'no-store',
             credentials: apiBase ? 'omit' : 'same-origin',
           }).then(r => r.json()),
@@ -122,12 +192,18 @@ export default function StaffPage() {
         setMenu(m);
         if (m.categories[0]) setActiveCat(m.categories[0].id);
         reloadOrders();
-      } catch (e) { setError(e.message); }
+      } catch (e) {
+        if (e.message === 'session expired') {
+          router.replace('/login?next=/staff');
+          return;
+        }
+        setError(e.message);
+      }
     })();
     return () => {
       cancelled = true;
     };
-  }, [reloadOrders]);
+  }, [reloadOrders, router]);
 
   const productsByCat = useMemo(() => {
     const map = new Map();
@@ -192,6 +268,7 @@ export default function StaffPage() {
     setCart((prev) => prev[key] ? { ...prev, [key]: { ...prev[key], note } } : prev);
   }
 
+  const [scannedPreview, setScannedPreview] = useState(null);
   async function addScannedProduct() {
     const code = scanCode.trim();
     if (!code) return;
@@ -203,13 +280,25 @@ export default function StaffPage() {
       if ((product.track_stock || product.product_type === 'stock') && Number(product.stock_qty || 0) <= 0) {
         throw new Error(`สินค้า "${product.name}" หมดสต๊อก`);
       }
-      addToCart(product);
+      // Show preview modal instead of auto-adding so staff can review the
+      // scanned item (right product? right price?) before committing.
+      setScannedPreview(product);
       setScanCode('');
     } catch (e) {
       setError(e.message);
     } finally {
       setScanBusy(false);
     }
+  }
+  function confirmScannedAdd(product, qty = 1, note = '') {
+    const complex = (product.variants?.length || 0) > 0 || (product.options?.length || 0) > 0;
+    if (complex) {
+      setPickerProduct(product);
+      setScannedPreview(null);
+      return;
+    }
+    for (let i = 0; i < qty; i += 1) addToCart(product, null, [], note);
+    setScannedPreview(null);
   }
 
   async function placeOrder() {
@@ -252,11 +341,38 @@ export default function StaffPage() {
     } catch (e) { setError(e.message); }
   }
 
+  const [togglingProductId, setTogglingProductId] = useState(null);
+  async function toggleAvailability(product) {
+    if (togglingProductId === product.id) return; // guard
+    setTogglingProductId(product.id);
+    const nextVal = !(product.is_available !== false);
+    try {
+      await authFetch(`/api/products/${product.id}/availability`, {
+        method: 'PATCH',
+        body: JSON.stringify({ is_available: nextVal }),
+      });
+      setMenu((prev) => ({
+        ...prev,
+        products: prev.products.map((p) =>
+          p.id === product.id ? { ...p, is_available: nextVal } : p),
+      }));
+    } catch (e) {
+      setError(`เปลี่ยนสถานะไม่สำเร็จ: ${e.message}`);
+    } finally {
+      setTogglingProductId(null);
+    }
+  }
+
   async function printOrder(id, type) {
     try {
       const r = await authFetch(`/api/print/order/${id}?type=${type}`, { method: 'POST' });
       if (r.skipped) setError(`พิมพ์ข้าม: ${r.reason}`);
     } catch (e) { setError(`พิมพ์ไม่สำเร็จ: ${e.message}`); }
+  }
+
+  function logout() {
+    clearAuth();
+    router.replace('/login');
   }
 
   if (!auth) return null;
@@ -265,8 +381,8 @@ export default function StaffPage() {
   const selectedTableOrders = selectedTableId ? (ordersByTable.get(selectedTableId) || []) : [];
 
   return (
-    <main style={{ minHeight: 'var(--app-height, 100vh)', background: '#f0f0f5', fontFamily: 'system-ui, sans-serif' }}>
-      <header style={{
+    <main className="pos-app-shell staff-page-shell" style={{ minHeight: 'var(--app-height, 100vh)', background: '#f0f0f5', fontFamily: 'system-ui, sans-serif' }}>
+      <header className="pos-topbar staff-topbar" style={{
         background: 'linear-gradient(135deg,#1a1a2e,#16213e)', color: 'white',
         padding: '14px 18px', display: 'flex', justifyContent: 'space-between', alignItems: 'center',
         position: 'sticky', top: 0, zIndex: 50, boxShadow: '0 2px 12px rgba(0,0,0,.3)'
@@ -275,10 +391,13 @@ export default function StaffPage() {
           <div style={{ fontWeight: 800, fontSize: 18 }}>👤 หน้าพนักงาน</div>
           <div style={{ opacity: .55, fontSize: 12 }}>{auth.user.full_name}</div>
         </div>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <a href="/kitchen" style={{ background: 'rgba(255,209,102,.15)', color: '#ffd166',
-              border: '1px solid rgba(255,209,102,.25)', padding: '7px 14px', borderRadius: 20,
-              textDecoration: 'none', fontSize: 12, fontWeight: 600 }}>🍳 ครัว</a>
+        <div className="staff-topbar-actions" style={{ display: 'flex', gap: 8 }}>
+          <button onClick={logout}
+                  style={{ background: 'rgba(239,71,111,.15)', color: '#ef476f',
+                           border: '1px solid rgba(239,71,111,.25)', padding: '7px 14px',
+                           borderRadius: 20, fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
+            🚪 ออก
+          </button>
         </div>
       </header>
 
@@ -286,9 +405,9 @@ export default function StaffPage() {
         <div style={{ background: '#ffe5e5', color: '#c00', padding: '8px 14px', fontSize: 13 }}>{error}</div>
       )}
 
-      <div style={{ display: 'grid', gridTemplateColumns: '260px 1fr', gap: 0, minHeight: 'calc(var(--app-height, 100vh) - 56px)' }}>
+      <div className="staff-layout" style={{ display: 'grid', gridTemplateColumns: '260px minmax(0, 1fr)', gap: 0, minHeight: 'calc(var(--app-height, 100vh) - 56px)' }}>
         {/* Tables sidebar */}
-        <aside style={{ background: 'white', borderRight: '1px solid #e5e5ea', padding: 12, overflowY: 'auto' }}>
+        <aside className="staff-table-rail" style={{ background: 'white', borderRight: '1px solid #e5e5ea', padding: 12, overflowY: 'auto' }}>
           <div style={{ fontSize: 11, letterSpacing: 2, color: '#888', marginBottom: 8, fontWeight: 700 }}>
             🪑 เลือกโต๊ะ
           </div>
@@ -298,6 +417,7 @@ export default function StaffPage() {
             const sum = tOrders.reduce((s, o) => s + Number(o.total_amount), 0);
             return (
               <button
+                className="staff-table-button"
                 key={t.id}
                 onClick={() => setSelectedTableId(t.id)}
                 style={{
@@ -317,18 +437,18 @@ export default function StaffPage() {
         </aside>
 
         {/* Main panel */}
-        <section style={{ padding: 16, overflowY: 'auto' }}>
+        <section className="staff-main-panel" style={{ padding: 16, overflowY: 'auto' }}>
           {!selectedTable ? (
             <div style={{ textAlign: 'center', padding: '60px 20px', color: '#999' }}>
-              เลือกโต๊ะจากด้านซ้ายเพื่อรับออเดอร์
+              เลือกโต๊ะเพื่อรับออเดอร์
             </div>
           ) : (
             <>
-              <div style={{ display: 'flex', justifyContent: 'space-between',
+              <div className="staff-table-header" style={{ display: 'flex', justifyContent: 'space-between',
                             alignItems: 'center', marginBottom: 12 }}>
                 <h2 style={{ fontSize: 22, fontWeight: 800, margin: 0 }}>{selectedTable.name}</h2>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <span style={{ fontSize: 12, color: '#888' }}>QR token: {selectedTable.qr_token.slice(0, 8)}…</span>
+                <div className="staff-table-actions" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span className="staff-qr-token" style={{ fontSize: 12, color: '#888' }}>QR token: {selectedTable.qr_token.slice(0, 8)}…</span>
                   <button onClick={() => setShowQr(true)}
                           title="แสดง QR ให้ลูกค้าสแกน"
                           style={{ background: '#1a1a2e', color: 'white', border: 'none',
@@ -347,7 +467,7 @@ export default function StaffPage() {
                     📋 ออเดอร์ของโต๊ะนี้
                   </div>
                   {selectedTableOrders.map((o) => (
-                    <div key={o.id} style={{ background: 'white', borderRadius: 12, padding: 10,
+                    <div className="staff-order-row" key={o.id} style={{ background: 'white', borderRadius: 12, padding: 10,
                                               marginBottom: 6, display: 'flex',
                                               justifyContent: 'space-between', alignItems: 'center' }}>
                       <span style={{ fontSize: 14 }}>
@@ -382,7 +502,7 @@ export default function StaffPage() {
                 <div style={{ fontSize: 11, letterSpacing: 2, color: '#888', marginBottom: 6, fontWeight: 700 }}>
                   📦 สแกนสินค้าหน้างาน
                 </div>
-                <div style={{ display: 'flex', gap: 8 }}>
+                <div className="staff-scan-row" style={{ display: 'flex', gap: 8 }}>
                   <input
                     value={scanCode}
                     onChange={(e) => setScanCode(e.target.value)}
@@ -426,18 +546,31 @@ export default function StaffPage() {
               </div>
 
               {/* Products grid */}
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 10 }}>
+              <div className="staff-products-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 10 }}>
                 {(productsByCat.get(activeCat) || []).map((p) => {
                   const productLines = cartItems.filter((c) => c.product.id === p.id);
                   const cur = productLines.reduce((sum, c) => sum + c.quantity, 0);
                   const firstKey = productLines[0]?.key;
+                  const available = p.is_available !== false;
+                  const toggling = togglingProductId === p.id;
                   return (
                     <div key={p.id} style={{ background: 'white', borderRadius: 12, padding: 12,
-                                              boxShadow: '0 2px 6px rgba(0,0,0,.04)' }}>
+                                              boxShadow: '0 2px 6px rgba(0,0,0,.04)',
+                                              opacity: available ? 1 : .55,
+                                              position: 'relative' }}>
+                      {!available && (
+                        <div style={{ position: 'absolute', top: 8, right: 8,
+                                      background: '#c0392b', color: 'white',
+                                      fontSize: 10, fontWeight: 800,
+                                      padding: '3px 8px', borderRadius: 10, zIndex: 1 }}>
+                          ของหมด
+                        </div>
+                      )}
                       {p.image_url && (
                         <img src={`${apiBase}${p.image_url}`} alt={p.name}
                              style={{ width: '100%', height: 80, objectFit: 'cover',
-                                      borderRadius: 8, marginBottom: 6, background: '#f5f5f7' }} />
+                                      borderRadius: 8, marginBottom: 6, background: '#f5f5f7',
+                                      filter: available ? 'none' : 'grayscale(0.7)' }} />
                       )}
                       <div style={{ fontWeight: 700, fontSize: 14 }}>{p.name}</div>
                       {p.description && (
@@ -448,25 +581,40 @@ export default function StaffPage() {
                         <span style={{ color: '#e85d04', fontWeight: 800 }}>
                           ฿{Number(p.price).toFixed(0)}
                         </span>
-                        {cur > 0 ? (
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                            <button onClick={() => firstKey && setQty(firstKey, cart[firstKey].quantity - 1)}
-                                    style={{ width: 26, height: 26, borderRadius: '50%',
-                                             border: '1.5px solid #eee', background: 'white',
-                                             cursor: 'pointer' }}>−</button>
-                            <span style={{ fontWeight: 700, minWidth: 18, textAlign: 'center' }}>{cur}</span>
+                        {available ? (
+                          cur > 0 ? (
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                              <button onClick={() => firstKey && setQty(firstKey, cart[firstKey].quantity - 1)}
+                                      style={{ width: 26, height: 26, borderRadius: '50%',
+                                               border: '1.5px solid #eee', background: 'white',
+                                               cursor: 'pointer' }}>−</button>
+                              <span style={{ fontWeight: 700, minWidth: 18, textAlign: 'center' }}>{cur}</span>
+                              <button onClick={() => onAddProduct(p)}
+                                      style={{ width: 26, height: 26, borderRadius: '50%',
+                                               border: 'none', background: '#1a1a2e', color: 'white',
+                                               cursor: 'pointer' }}>+</button>
+                            </div>
+                          ) : (
                             <button onClick={() => onAddProduct(p)}
-                                    style={{ width: 26, height: 26, borderRadius: '50%',
+                                    style={{ width: 30, height: 30, borderRadius: '50%',
                                              border: 'none', background: '#1a1a2e', color: 'white',
-                                             cursor: 'pointer' }}>+</button>
-                          </div>
+                                             fontSize: 18, cursor: 'pointer' }}>+</button>
+                          )
                         ) : (
-                          <button onClick={() => onAddProduct(p)}
-                                  style={{ width: 30, height: 30, borderRadius: '50%',
-                                           border: 'none', background: '#1a1a2e', color: 'white',
-                                           fontSize: 18, cursor: 'pointer' }}>+</button>
+                          <span style={{ fontSize: 11, color: '#888' }}>ปิดขายอยู่</span>
                         )}
                       </div>
+                      <button onClick={() => toggleAvailability(p)} disabled={toggling}
+                              style={{ marginTop: 8, width: '100%', padding: '6px 8px',
+                                       borderRadius: 8, border: 'none', cursor: 'pointer',
+                                       fontSize: 12, fontWeight: 700,
+                                       opacity: toggling ? .6 : 1,
+                                       background: available ? '#fef0ef' : '#e8f5e9',
+                                       color: available ? '#c0392b' : '#1f6f43' }}>
+                        {toggling
+                          ? 'กำลังเปลี่ยน...'
+                          : (available ? '🛑 ปิดขาย (ของหมด)' : '✓ เปิดขายอีกครั้ง')}
+                      </button>
                     </div>
                   );
                 })}
@@ -713,12 +861,36 @@ function StaffProductPicker({ product, onCancel, onConfirm }) {
   );
 }
 
-// Full-screen QR overlay so staff can show the customer's phone.
+// Full-screen QR overlay so staff can show the customer's phone — or
+// print a paper QR as an alternative for customers who can't scan.
 // URL: <base>/order?t=<qr_token>
 function CustomerQrModal({ table, base, wifiOnly, onClose }) {
   const url = `${base}/order?t=${table.qr_token}`;
   const qrSrc = `${apiBase}/api/qr?size=480&text=${encodeURIComponent(url)}`;
   const isLan = isLanLikeUrl(base);
+  const [printing, setPrinting] = useState(false);
+  const [notice, setNotice] = useState(null);
+
+  async function printThermal() {
+    setPrinting(true);
+    setNotice(null);
+    try {
+      await authFetch('/api/print/qr', {
+        method: 'POST',
+        body: JSON.stringify({
+          url,
+          table_name: table.name,
+          table_code: table.code,
+          copies: 1,
+        }),
+      });
+      setNotice('ส่งคิวพิมพ์ QR ไปเครื่องใบเสร็จแล้ว');
+    } catch (e) {
+      setNotice(`พิมพ์ไม่สำเร็จ: ${e.message}`);
+    } finally {
+      setPrinting(false);
+    }
+  }
   return (
     <div onClick={onClose}
          style={{
@@ -729,6 +901,8 @@ function CustomerQrModal({ table, base, wifiOnly, onClose }) {
            style={{
              background: 'white', borderRadius: 18, padding: 24, maxWidth: 420,
              width: '100%', textAlign: 'center', boxShadow: '0 20px 60px rgba(0,0,0,.4)',
+             maxHeight: 'calc(var(--app-height, 100vh) - 32px)',
+             overflowY: 'auto',
            }}>
         <div style={{ fontSize: 13, color: '#888', marginBottom: 4 }}>📱 ให้ลูกค้าสแกนเพื่อสั่งอาหาร</div>
         <div style={{ fontSize: 22, fontWeight: 800, marginBottom: 14 }}>{table.name}</div>
@@ -751,12 +925,37 @@ function CustomerQrModal({ table, base, wifiOnly, onClose }) {
             (Caddy domain หรือ ngrok URL)
           </div>
         ) : null}
-        <button onClick={onClose}
-                style={{ marginTop: 14, background: '#1a1a2e', color: 'white',
-                         border: 'none', borderRadius: 10, padding: '10px 22px',
-                         fontWeight: 700, cursor: 'pointer' }}>
-          ปิด
-        </button>
+        {notice && (
+          <div style={{ marginTop: 10, padding: 8, borderRadius: 8, fontSize: 12,
+                        background: notice.startsWith('พิมพ์ไม่') ? '#ffe5e5' : '#e8f5e9',
+                        color: notice.startsWith('พิมพ์ไม่') ? '#c00' : '#1f6f43' }}>
+            {notice}
+          </div>
+        )}
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'center', flexWrap: 'wrap', marginTop: 14 }}>
+          <button onClick={printThermal} disabled={printing}
+                  style={{ background: '#1a1a2e', color: 'white',
+                           border: 'none', borderRadius: 10, padding: '10px 18px',
+                           fontWeight: 700, cursor: 'pointer', opacity: printing ? .6 : 1 }}>
+            🧾 {printing ? 'กำลังส่ง…' : 'พิมพ์ผ่านเครื่องใบเสร็จ'}
+          </button>
+          <button onClick={() => openQrPrintWindow({
+            url, tableName: table.name, tableCode: table.code,
+            note: 'สแกน QR เพื่อสั่งอาหาร',
+          })}
+                  style={{ background: '#f0f0f5', color: '#1a1a2e',
+                           border: 'none', borderRadius: 10, padding: '10px 18px',
+                           fontWeight: 700, cursor: 'pointer' }}
+                  title="สำหรับเครื่องพิมพ์ A4">
+            🌐 เบราว์เซอร์
+          </button>
+          <button onClick={onClose}
+                  style={{ background: '#f0f0f5', color: '#1a1a2e',
+                           border: 'none', borderRadius: 10, padding: '10px 18px',
+                           fontWeight: 700, cursor: 'pointer' }}>
+            ปิด
+          </button>
+        </div>
       </div>
     </div>
   );

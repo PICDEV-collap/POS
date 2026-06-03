@@ -1,8 +1,10 @@
 'use client';
 
-import { Suspense, useEffect, useMemo, useState } from 'react';
+import { Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { api, apiBase } from '@/lib/api';
+import { ensureSocketConnected } from '@/lib/socket';
+import { useRealtimeRecovery } from '@/lib/realtimeRecovery';
 import { storageGet, storageSet, storageJson } from '@/lib/browser';
 
 export default function OrderPageWrapper() {
@@ -70,7 +72,7 @@ function OrderPage() {
     if (!token) { setError('ไม่พบรหัส QR ของโต๊ะ'); return; }
     const key = getOrCreateCustomerKey();
     setCustomerKey(key);
-    Promise.all([api.getTable(token, key), api.getMenu()])
+    Promise.all([api.getTable(token, key), api.getMenu(token)])
       .then(([t, m]) => {
         applyTableResponse(t, key);
         if (t?.is_takeaway) setOrderType('takeaway');
@@ -80,6 +82,22 @@ function OrderPage() {
       })
       .catch((e) => setError(e.message));
   }, [token]);
+
+  // When staff/admin toggle product availability, refresh menu via the
+  // proven useRealtimeRecovery hook (auto re-attach on socket rebuild +
+  // polling fallback so the customer never gets stuck on a sold-out item).
+  const reloadMenuForCustomer = useCallback(async () => {
+    if (!token) return;
+    try {
+      const m = await api.getMenu(token);
+      setMenu({ categories: m.categories, products: m.products });
+    } catch (_e) { /* keep stale on fail */ }
+  }, [token]);
+  useRealtimeRecovery(reloadMenuForCustomer, {
+    events: ['product:availability'],
+    intervalMs: 8000,
+    reloadOnMount: false,
+  });
 
   // Poll table orders every 8s for the "ออเดอร์ของฉัน" tab
   useEffect(() => {
@@ -356,7 +374,7 @@ function OrderPage() {
   const activeProducts = productsByCat.get(activeCat) || [];
 
   return (
-    <main style={{ maxWidth: 480, margin: '0 auto', minHeight: 'var(--app-height, 100vh)', background: BEIGE, paddingBottom: totalQty > 0 ? 430 : 24 }}>
+    <main className="customer-order-shell" style={{ paddingBottom: totalQty > 0 ? 430 : 24 }}>
       {/* Header navy gradient */}
       <div style={{
         background: `linear-gradient(135deg, ${NAVY}, ${NAVY2})`,
@@ -464,10 +482,7 @@ function OrderPage() {
       )}
 
       {/* Tab card */}
-      <div style={{
-        background: 'white', margin: '10px 14px 0', borderRadius: 14,
-        boxShadow: '0 4px 18px rgba(0,0,0,.1)',
-      }}>
+      <div className="customer-tab-card">
         {tableOrders.length > 0 && (
           <div style={{ display: 'flex', borderBottom: '1.5px solid #f0f0f0' }}>
             <TabBtn active={tab === 'menu'} onClick={() => setTab('menu')}>🍽️ เมนู</TabBtn>
@@ -478,17 +493,12 @@ function OrderPage() {
         )}
 
         {tab === 'menu' && (
-          <div style={{ padding: 8, display: 'flex', gap: 6, overflowX: 'auto' }}>
+          <div className="customer-category-rail">
             {cats.map((c) => {
               const active = activeCat === c.id;
               return (
                 <button key={c.id} onClick={() => setActiveCat(c.id)}
-                  style={{
-                    flex: 'none', padding: '8px 14px', borderRadius: 9, border: 'none',
-                    fontSize: 13, fontWeight: 600, whiteSpace: 'nowrap',
-                    background: active ? NAVY : 'transparent',
-                    color: active ? 'white' : '#666',
-                  }}>
+                  className={`customer-category-pill${active ? ' is-active' : ''}`}>
                   {c.icon || ''} {c.name}
                 </button>
               );
@@ -499,7 +509,7 @@ function OrderPage() {
 
       {/* Tab content */}
       {tab === 'menu' && (
-        <div style={{ padding: 14 }}>
+        <div className="customer-menu-list">
           {activeProducts.length === 0 && (
             <div style={{ textAlign: 'center', opacity: .4, padding: 40, fontSize: 15 }}>
               ไม่มีเมนูในหมวดนี้
@@ -510,61 +520,44 @@ function OrderPage() {
               .filter((c) => c.productId === p.id)
               .reduce((s, c) => s + c.quantity, 0);
             return (
-              <div key={p.id} style={{
-                background: 'white', borderRadius: 14, padding: 14, marginBottom: 10,
-                display: 'flex', alignItems: 'center', gap: 12,
-                boxShadow: '0 2px 10px rgba(0,0,0,.06)',
-              }}>
+              <div key={p.id} className="customer-menu-row">
                 {p.image_url ? (
                   <img src={`${apiBase}${p.image_url}`} alt={p.name}
-                    style={{ width: 56, height: 56, borderRadius: 10, objectFit: 'cover' }} />
+                    className="customer-menu-image" />
                 ) : (
-                  <div style={{ fontSize: 38, lineHeight: 1, width: 56, textAlign: 'center' }}>
+                  <div className="customer-menu-emoji">
                     {p.emoji || '🍽️'}
                   </div>
                 )}
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                    <span style={{ fontWeight: 700, fontSize: 15 }}>{p.name}</span>
+                <div className="customer-menu-info">
+                  <div className="customer-menu-title-row">
+                    <span className="customer-menu-title">{p.name}</span>
                     {p.is_popular && (
-                      <span style={{
-                        background: '#fff3cd', color: '#856404', fontSize: 10,
-                        padding: '2px 7px', borderRadius: 10, fontWeight: 600,
-                      }}>🔥 ยอดนิยม</span>
+                      <span className="customer-popular-badge">🔥 ยอดนิยม</span>
                     )}
                   </div>
                   {p.description && (
-                    <div style={{
-                      color: '#777', fontSize: 12, marginTop: 2,
-                      lineHeight: 1.35,
-                      display: '-webkit-box', WebkitLineClamp: 2,
-                      WebkitBoxOrient: 'vertical',
-                      overflow: 'hidden',
-                    }}>{p.description}</div>
+                    <div className="customer-menu-description">{p.description}</div>
                   )}
                   {p.variants && p.variants.length > 0 && (
-                    <div style={{ color: '#888', fontSize: 11, marginTop: 2 }}>
+                    <div className="customer-menu-variants">
                       📐 {p.variants.map((v) => `${v.name} ${restaurant.currency}${v.price}`).join(' · ')}
                     </div>
                   )}
-                  <div style={{ color: NAVY, fontWeight: 800, fontSize: 15, marginTop: 3 }}>
+                  <div className="customer-menu-price">
                     {restaurant.currency}{p.price}
                   </div>
                 </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <div className="customer-menu-action">
                   {totalQtyForP > 0 && (
-                    <span style={{ fontWeight: 700, minWidth: 18, textAlign: 'center' }}>
+                    <span className="customer-menu-qty">
                       ×{totalQtyForP}
                     </span>
                   )}
                   <button onClick={() => onAddProduct(p)}
                     disabled={!orderingAllowed}
-                    style={{
-                      width: 32, height: 32, borderRadius: '50%', border: 'none',
-                      background: NAVY, color: 'white', fontSize: 18, fontWeight: 'bold',
-                      cursor: orderingAllowed ? 'pointer' : 'not-allowed',
-                      opacity: orderingAllowed ? 1 : .35,
-                    }}>+</button>
+                    className="customer-menu-add"
+                    style={{ opacity: orderingAllowed ? 1 : .35 }}>+</button>
                 </div>
               </div>
             );

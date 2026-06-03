@@ -1,0 +1,17 @@
+[Unit]
+Description=POS V2 PostgreSQL Backup
+Wants=postgresql.service
+After=postgresql.service
+
+[Service]
+Type=oneshot
+User=__APP_USER__
+Group=__APP_GROUP__
+Environment=POS_ETC_DIR=__ETC_DIR__
+Environment=POS_BACKUP_DIR=__BACKUP_DIR__
+ExecStart=__INSTALL_DIR__/deploy/raspberry-pi/scripts/backup.sh
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=__BACKUP_DIR__
+SyslogIdentifier=pos-v2-backup

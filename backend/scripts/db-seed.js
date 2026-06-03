@@ -13,9 +13,9 @@ const db = require('../src/db');
 const BCRYPT_COST = parseInt(process.env.BCRYPT_COST, 10) || 12;
 
 const DEV_USERS = [
-  { username: 'admin',   password: 'admin123',   full_name: 'Administrator', role: 'admin' },
-  { username: 'staff1',  password: 'staff123',   full_name: 'พนักงาน 1',     role: 'staff' },
-  { username: 'kitchen', password: 'kitchen123', full_name: 'ครัว',          role: 'kitchen' },
+  { username: 'admin',   password: 'admin123',   full_name: 'Administrator', role: 'super_admin', store_id: 1, allowed_store_ids: [1] },
+  { username: 'staff1',  password: 'staff123',   full_name: 'พนักงาน 1',     role: 'staff',       store_id: 1, allowed_store_ids: [1] },
+  { username: 'kitchen', password: 'kitchen123', full_name: 'ครัว',          role: 'kitchen',     store_id: 1, allowed_store_ids: [1] },
 ];
 
 (async () => {
@@ -38,10 +38,15 @@ const DEV_USERS = [
     for (const u of DEV_USERS) {
       const hash = await bcrypt.hash(u.password, BCRYPT_COST);
       await db.query(
-        `INSERT INTO users (username, password_hash, full_name, role)
-         VALUES ($1, $2, $3, $4)
-         ON CONFLICT (username) DO UPDATE SET password_hash = EXCLUDED.password_hash`,
-        [u.username, hash, u.full_name, u.role]
+        `INSERT INTO users (username, password_hash, full_name, role, store_id, allowed_store_ids)
+         VALUES ($1, $2, $3, $4, $5, $6::int[])
+         ON CONFLICT (username) DO UPDATE SET
+           password_hash = EXCLUDED.password_hash,
+           full_name = EXCLUDED.full_name,
+           role = EXCLUDED.role,
+           store_id = EXCLUDED.store_id,
+           allowed_store_ids = EXCLUDED.allowed_store_ids`,
+        [u.username, hash, u.full_name, u.role, u.store_id, u.allowed_store_ids]
       );
       console.log(`  - ${u.username} / ${u.password}  (role=${u.role})`);
     }

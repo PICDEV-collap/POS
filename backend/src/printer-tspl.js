@@ -88,10 +88,10 @@ function kitchenLines(order) {
   lines.push({ rule: '-', size: 18 });
   for (const section of kitchenSections(order)) {
     lines.push({ text: `-- ${section.label} --`, size: 24, bold: true });
-    for (const { item: it, index } of section.items) {
+    for (const { item: it } of section.items) {
       let suffix = '';
       if (it.variant_name) suffix += ` (${it.variant_name})`;
-      lines.push({ text: `${index + 1}. ${it.quantity} x ${it.product_name}${suffix}`, size: 24, bold: true });
+      lines.push({ text: `${it.quantity} x ${it.product_name}${suffix}`, size: 24, bold: true });
       if (Array.isArray(it.options_selected) && it.options_selected.length) {
         lines.push({ text: `   > ${it.options_selected.map((o) => o.value).join(' · ')}`, size: 18 });
       }
@@ -108,15 +108,16 @@ function kitchenLines(order) {
 
 function receiptLines(order, opts) {
   const restaurantName = opts.restaurantName || 'POS V2';
+  const widthPx = opts.widthPx || 384;
   const lines = [];
-  lines.push({ text: restaurantName, size: 32, bold: true, align: 'center' });
+  lines.push({ text: restaurantName, size: 32, bold: true, align: 'center', wrap: true, maxWidth: widthPx - 16 });
   lines.push({ text: '--- ใบเสร็จ / RECEIPT ---', size: 18, align: 'center' });
   lines.push({ text: orderQueueLabel(order), right: orderLocationLabel(order), size: 18 });
   lines.push({ text: `Order #${order.id}`, size: 16 });
   lines.push({ text: new Date(order.created_at).toLocaleString('th-TH'), size: 16 });
   lines.push({ rule: '-', size: 18 });
-  for (const [index, it] of order.items.entries()) {
-    lines.push({ text: `${index + 1}. ${it.quantity} x ${it.product_name}${it.variant_name ? ' (' + it.variant_name + ')' : ''}`, size: 20 });
+  for (const it of order.items) {
+    lines.push({ text: `${it.quantity} x ${it.product_name}${it.variant_name ? ' (' + it.variant_name + ')' : ''}`, size: 20 });
     lines.push({ text: `  [${fulfillmentText(itemFulfillmentType(order, it))}]`, size: 14 });
     const lineTotal = (Number(it.unit_price) * it.quantity).toFixed(2);
     lines.push({ text: `  @${Number(it.unit_price).toFixed(2)}`, right: lineTotal, size: 16 });

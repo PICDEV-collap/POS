@@ -1,9 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../config.dart';
+import '../models/product.dart';
 import '../services/auth_service.dart';
 
 class AdminLoginScreen extends StatefulWidget {
-  const AdminLoginScreen({super.key});
+  final int? initialStoreId;
+  const AdminLoginScreen({super.key, this.initialStoreId});
 
   @override
   State<AdminLoginScreen> createState() => _AdminLoginScreenState();
@@ -13,7 +16,17 @@ class _AdminLoginScreenState extends State<AdminLoginScreen> {
   final _userCtrl = TextEditingController();
   final _passCtrl = TextEditingController();
   bool _loading = false;
+  bool _loadingStores = true;
+  List<PosStore> _stores = const [];
+  int? _selectedStoreId;
   String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _selectedStoreId = widget.initialStoreId;
+    _loadStores();
+  }
 
   @override
   void dispose() {
@@ -22,21 +35,67 @@ class _AdminLoginScreenState extends State<AdminLoginScreen> {
     super.dispose();
   }
 
+  Future<void> _loadStores() async {
+    setState(() {
+      _loadingStores = true;
+      _error = null;
+    });
+    try {
+      final stores = await context.read<AuthService>().loginStores();
+      if (!mounted) return;
+      final activeStores = stores.where((store) => store.isActive).toList();
+      setState(() {
+        _stores = activeStores;
+        _selectedStoreId =
+            activeStores.any((store) => store.id == _selectedStoreId)
+            ? _selectedStoreId
+            : (activeStores.isNotEmpty ? activeStores.first.id : null);
+        _loadingStores = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _stores = const [];
+        _selectedStoreId = null;
+        _loadingStores = false;
+        _error = e.toString().replaceFirst('Exception: ', '');
+      });
+    }
+  }
+
   Future<void> _login() async {
-    if (_loading) return;
+    if (_loading || _selectedStoreId == null) return;
     setState(() {
       _loading = true;
       _error = null;
     });
     try {
       final auth = context.read<AuthService>();
-      await auth.login(_userCtrl.text.trim(), _passCtrl.text);
+      await auth.login(
+        _userCtrl.text.trim(),
+        _passCtrl.text,
+        storeId: _selectedStoreId,
+      );
       final role = auth.user?.role;
       if (role == 'staff') {
         await auth.logout();
-        throw Exception('Staff ให้กลับไปกด "เข้าใช้งาน Staff" ที่หน้า Login');
+        throw Exception('บัญชี staff ให้เข้าสู่ระบบจากหน้า Login หลัก');
       }
-      if (role != 'admin' && role != 'kitchen') {
+      if (role == 'super_admin' && AppConfig.isPublicRemoteBase) {
+        await auth.logout();
+        throw Exception(
+          'บัญชี server admin ใช้นอกวง LAN ไม่ได้ กรุณาใช้บัญชี store admin สำหรับ mobile',
+        );
+      }
+      if (role == 'admin' &&
+          AppConfig.isPublicRemoteBase &&
+          auth.user?.isMobileStoreAdmin != true) {
+        await auth.logout();
+        throw Exception(
+          'บัญชี admin นี้ยังไม่ได้เปิดสิทธิ์ mobile store admin',
+        );
+      }
+      if (role != 'admin' && role != 'super_admin' && role != 'kitchen') {
         await auth.logout();
         throw Exception('บัญชีนี้ไม่มีสิทธิ์เข้า admin/kitchen');
       }
@@ -78,13 +137,15 @@ class _AdminLoginScreenState extends State<AdminLoginScreen> {
                   style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800),
                 ),
                 const SizedBox(height: 24),
+                _storeSelector(),
+                const SizedBox(height: 12),
                 TextField(
                   controller: _userCtrl,
                   autofocus: true,
                   textInputAction: TextInputAction.next,
                   decoration: const InputDecoration(
                     labelText: 'ชื่อผู้ใช้',
-                    hintText: 'admin / kitchen',
+                    hintText: 'store admin / kitchen',
                     border: OutlineInputBorder(),
                   ),
                 ),
@@ -111,7 +172,10 @@ class _AdminLoginScreenState extends State<AdminLoginScreen> {
                 ],
                 const SizedBox(height: 16),
                 FilledButton(
-                  onPressed: _loading ? null : _login,
+                  onPressed:
+                      _loading || _loadingStores || _selectedStoreId == null
+                      ? null
+                      : _login,
                   style: FilledButton.styleFrom(
                     backgroundColor: const Color(0xFF1A1A2E),
                     foregroundColor: Colors.white,
@@ -128,11 +192,72 @@ class _AdminLoginScreenState extends State<AdminLoginScreen> {
                         )
                       : const Text('เข้าสู่ระบบ'),
                 ),
+                if (!_loadingStores && _stores.isEmpty) ...[
+                  const SizedBox(height: 10),
+                  OutlinedButton.icon(
+                    onPressed: _loadStores,
+                    icon: const Icon(Icons.refresh),
+                    label: const Text('โหลดรายชื่อร้านอีกครั้ง'),
+                  ),
+                ],
               ],
             ),
           ),
         ),
       ),
+    );
+  }
+
+  Widget _storeSelector() {
+    if (_loadingStores) {
+      return const InputDecorator(
+        decoration: InputDecoration(
+          labelText: 'เลือกร้านที่จะจัดการ',
+          border: OutlineInputBorder(),
+          prefixIcon: Icon(Icons.storefront),
+        ),
+        child: Row(
+          children: [
+            SizedBox(
+              width: 18,
+              height: 18,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
+            SizedBox(width: 12),
+            Text('กำลังโหลดรายชื่อร้าน...'),
+          ],
+        ),
+      );
+    }
+    if (_stores.isEmpty) {
+      return const InputDecorator(
+        decoration: InputDecoration(
+          labelText: 'เลือกร้านที่จะจัดการ',
+          border: OutlineInputBorder(),
+          prefixIcon: Icon(Icons.storefront),
+        ),
+        child: Text('ยังโหลดรายชื่อร้านไม่ได้'),
+      );
+    }
+    return DropdownButtonFormField<int>(
+      value: _selectedStoreId,
+      isExpanded: true,
+      decoration: const InputDecoration(
+        labelText: 'เลือกร้านที่จะจัดการ',
+        border: OutlineInputBorder(),
+        prefixIcon: Icon(Icons.storefront),
+      ),
+      items: [
+        for (final store in _stores)
+          DropdownMenuItem<int>(
+            value: store.id,
+            child: Text(
+              '${store.logo?.isNotEmpty == true ? store.logo! : "ร้าน"} ${store.name} (#${store.id})',
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+      ],
+      onChanged: (value) => setState(() => _selectedStoreId = value),
     );
   }
 }

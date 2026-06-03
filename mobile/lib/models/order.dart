@@ -81,6 +81,7 @@ class PosOrder {
   final String fulfillmentSummary;
   final DateTime createdAt;
   final List<OrderItem> items;
+  final int itemCount;
 
   PosOrder({
     required this.id,
@@ -96,7 +97,8 @@ class PosOrder {
     this.fulfillmentSummary = 'dine-in',
     required this.createdAt,
     required this.items,
-  });
+    int? itemCount,
+  }) : itemCount = itemCount ?? items.length;
 
   PosOrder copyWith({
     int? id,
@@ -112,6 +114,7 @@ class PosOrder {
     String? fulfillmentSummary,
     DateTime? createdAt,
     List<OrderItem>? items,
+    int? itemCount,
   }) => PosOrder(
     id: id ?? this.id,
     dailySeq: dailySeq ?? this.dailySeq,
@@ -126,28 +129,33 @@ class PosOrder {
     fulfillmentSummary: fulfillmentSummary ?? this.fulfillmentSummary,
     createdAt: createdAt ?? this.createdAt,
     items: items ?? this.items,
+    itemCount: itemCount ?? this.itemCount,
   );
 
-  factory PosOrder.fromJson(Map<String, dynamic> j) => PosOrder(
-    id: j['id'] as int,
-    dailySeq: (j['daily_seq'] as int?) ?? (j['id'] as int),
-    businessDate: j['business_date']?.toString(),
-    tableId: j['table_id'] as int,
-    tableCode: j['table_code']?.toString() ?? '',
-    tableName: j['table_name']?.toString() ?? '',
-    status: j['status'] as String,
-    totalAmount: double.parse(j['total_amount'].toString()),
-    note: j['note'] as String?,
-    source: j['source'] as String? ?? 'unknown',
-    fulfillmentSummary:
-        j['fulfillment_summary']?.toString() ??
-        j['order_type']?.toString() ??
-        'dine-in',
-    createdAt: DateTime.parse(j['created_at'] as String),
-    items:
+  factory PosOrder.fromJson(Map<String, dynamic> j) {
+    final items =
         (j['items'] as List?)
             ?.map((it) => OrderItem.fromJson(it as Map<String, dynamic>))
             .toList() ??
-        const [],
-  );
+        const <OrderItem>[];
+    return PosOrder(
+      id: j['id'] as int,
+      dailySeq: (j['daily_seq'] as int?) ?? (j['id'] as int),
+      businessDate: j['business_date']?.toString(),
+      tableId: j['table_id'] as int,
+      tableCode: j['table_code']?.toString() ?? '',
+      tableName: j['table_name']?.toString() ?? '',
+      status: j['status'] as String,
+      totalAmount: double.parse(j['total_amount'].toString()),
+      note: j['note'] as String?,
+      source: j['source'] as String? ?? 'unknown',
+      fulfillmentSummary:
+          j['fulfillment_summary']?.toString() ??
+          j['order_type']?.toString() ??
+          'dine-in',
+      createdAt: DateTime.parse(j['created_at'] as String),
+      items: items,
+      itemCount: int.tryParse((j['item_count'] ?? items.length).toString()),
+    );
+  }
 }

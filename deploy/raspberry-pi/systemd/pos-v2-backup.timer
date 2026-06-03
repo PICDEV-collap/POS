@@ -1,0 +1,10 @@
+[Unit]
+Description=Run POS V2 backup every day
+
+[Timer]
+OnCalendar=*-*-* 03:15:00
+Persistent=true
+Unit=pos-v2-backup.service
+
+[Install]
+WantedBy=timers.target

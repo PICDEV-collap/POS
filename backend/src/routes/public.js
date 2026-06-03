@@ -25,7 +25,7 @@ function isTakeawayPoint(table) {
 async function tableFromToken(token) {
   if (!token) return null;
   const { rows } = await db.query(
-    'SELECT id, code, name, seats, is_active FROM tables WHERE qr_token = $1',
+    'SELECT id, store_id, code, name, seats, is_active FROM tables WHERE qr_token = $1',
     [token]
   );
   const t = rows[0];
@@ -36,10 +36,10 @@ async function tableFromToken(token) {
 router.get('/table/:token', async (req, res) => {
   const t = await tableFromToken(req.params.token);
   if (!t) return res.status(404).json({ error: 'invalid table' });
-  const orderState = await getPublicOrderState(req);
+  const orderState = await getPublicOrderState(req, null, t.store_id);
   let session = null;
   if (orderState.allowed && orderState.settings.ordering_require_session) {
-    session = await issueCustomerSession(t.id, req, customerKeyFromRequest(req));
+    session = await issueCustomerSession(t.id, req, customerKeyFromRequest(req), t.store_id);
   }
   res.json({
     id: t.id,
@@ -57,22 +57,43 @@ router.get('/table/:token', async (req, res) => {
 // Products with no/inactive category are excluded — they'd be orphans the
 // customer UI couldn't slot anywhere. Admin can re-categorize them in
 // /admin → tab "เมนู" if they want them visible again.
-router.get('/menu', async (_req, res) => {
+router.get('/menu', async (req, res) => {
+  let storeId = Number(req.query.store_id || 1);
+  if (req.query.token) {
+    const table = await tableFromToken(req.query.token);
+    if (!table) return res.status(404).json({ error: 'invalid table' });
+    storeId = table.store_id || 1;
+  }
+  // Staff/admin views set ?include_unavailable=1 to see sold-out items so
+  // they can flip them back on. Customers never set this flag, so even
+  // without auth this only leaks which menus are sold out (not sensitive).
+  const includeUnavailable = req.query.include_unavailable === '1'
+      || req.query.include_unavailable === 'true';
   const cats = await db.query(
     `SELECT id, name, icon, sort_order FROM categories
-       WHERE is_active = TRUE ORDER BY sort_order, id`
+       WHERE is_active = TRUE AND store_id = $1 ORDER BY sort_order, id`,
+    [storeId]
   );
+  const availFilter = includeUnavailable ? '' : 'AND p.is_available = TRUE';
   const prods = await db.query(
     `SELECT p.id, p.category_id, p.name, p.description, p.price, p.image_url,
             p.sort_order, p.emoji, p.is_popular, p.options, p.variants,
-            p.product_type, p.print_station_key
+            p.product_type, p.print_station_key, p.is_available
        FROM products p
        JOIN categories c ON c.id = p.category_id
-      WHERE p.is_available = TRUE AND c.is_active = TRUE
+      WHERE c.is_active = TRUE ${availFilter}
+        AND p.store_id = $1 AND c.store_id = $1
         AND COALESCE(p.product_type, 'food') <> 'stock'
       ORDER BY p.sort_order, p.id`
+    ,
+    [storeId]
   );
-  const r = await db.query('SELECT name, logo, currency FROM restaurant_settings WHERE id = 1');
+  const r = await db.query(
+    `SELECT name, logo, currency, public_base_url AS base_url
+       FROM stores
+      WHERE id = $1 AND is_active = TRUE`,
+    [storeId]
+  );
   res.json({
     categories: cats.rows,
     products: await attachNormalizedMenus(db, prods.rows),
@@ -89,7 +110,7 @@ router.post('/orders', async (req, res, next) => {
     } = req.body || {};
     const t = await tableFromToken(token);
     if (!t) return res.status(404).json({ error: 'invalid table' });
-    const orderState = await getPublicOrderState(req, req.body);
+    const orderState = await getPublicOrderState(req, req.body, t.store_id);
     if (!orderState.allowed) {
       logger.warn('public-order', 'order blocked by public guard', {
         table_id: t.id,
@@ -113,6 +134,7 @@ router.post('/orders', async (req, res, next) => {
       settings: orderState.settings,
       customerKey: customer_key || customerKeyFromRequest(req, req.body),
       sessionToken: customer_session_token || sessionTokenFromRequest(req, req.body),
+      storeId: t.store_id,
     });
     if (!sessionCheck.ok) {
       logger.warn('public-order', 'order blocked by invalid customer session', {

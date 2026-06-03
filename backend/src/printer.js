@@ -20,6 +20,9 @@
 
 const net = require('net');
 const os = require('os');
+const fs = require('fs/promises');
+const path = require('path');
+const { spawn } = require('child_process');
 const { randomUUID } = require('crypto');
 const iconv = require('iconv-lite');
 const db = require('./db');
@@ -62,6 +65,54 @@ function thaiText(str) {
 }
 function line(text = '') { return Buffer.concat([thaiText(text), LF]); }
 function rule(width, ch = '-') { return line(ch.repeat(width)); }
+function thaiClusters(text) {
+  const marks = /[\u0e31\u0e34-\u0e3a\u0e47-\u0e4e]/;
+  const out = [];
+  for (const ch of Array.from(String(text ?? ''))) {
+    if (marks.test(ch) && out.length) out[out.length - 1] += ch;
+    else out.push(ch);
+  }
+  return out;
+}
+function columnWidth(text) {
+  return thaiClusters(text).filter((part) => !/^[\u0e31\u0e34-\u0e3a\u0e47-\u0e4e]+$/.test(part)).length;
+}
+function wrapTextColumns(text, maxColumns) {
+  const max = Math.max(1, Math.floor(maxColumns));
+  const result = [];
+  for (const paragraph of String(text ?? '').split(/\r?\n/)) {
+    const tokens = paragraph.split(/(\s+)/).filter((token) => token.length > 0);
+    let current = '';
+    for (const token of tokens) {
+      if (/^\s+$/.test(token)) {
+        if (current && !current.endsWith(' ')) current += ' ';
+        continue;
+      }
+      const candidate = current ? current + token : token;
+      if (columnWidth(candidate) <= max) {
+        current = candidate;
+        continue;
+      }
+      if (current.trim()) {
+        result.push(current.trimEnd());
+        current = '';
+      }
+      let chunk = '';
+      for (const cluster of thaiClusters(token)) {
+        const next = chunk + cluster;
+        if (columnWidth(next) > max && chunk) {
+          result.push(chunk);
+          chunk = cluster;
+        } else {
+          chunk = next;
+        }
+      }
+      current = chunk;
+    }
+    if (current.trim()) result.push(current.trimEnd());
+  }
+  return result.length ? result : [''];
+}
 function pad(left, right, width) {
   const l = String(left ?? '');
   const r = String(right ?? '');
@@ -151,9 +202,9 @@ function buildKitchenReceipt(order, opts = {}) {
   parts.push(rule(W));
   for (const section of kitchenSections(order)) {
     parts.push(BOLD_ON, SIZE_TALL, line(`-- ${section.label} --`), BOLD_OFF, SIZE_NORMAL);
-    for (const { item: it, index } of section.items) {
+    for (const { item: it } of section.items) {
       const variantSuffix = it.variant_name ? ` (${it.variant_name})` : '';
-      parts.push(BOLD_ON, SIZE_TALL, line(`${index + 1}. ${it.quantity} x ${it.product_name}${variantSuffix}`), BOLD_OFF, SIZE_NORMAL);
+      parts.push(BOLD_ON, SIZE_TALL, line(`${it.quantity} x ${it.product_name}${variantSuffix}`), BOLD_OFF, SIZE_NORMAL);
       if (Array.isArray(it.options_selected) && it.options_selected.length) {
         parts.push(line(`   > ${it.options_selected.map((o) => o.value).join(' · ')}`));
       }
@@ -174,15 +225,19 @@ function buildCustomerReceipt(order, opts = {}) {
   const cp = opts.thaiCp ?? 21;
   const restaurantName = opts.restaurantName || 'POS V2';
   const parts = [INIT, selectCodePage(cp)];
-  parts.push(ALIGN_C, SIZE_DOUBLE, BOLD_ON, line(restaurantName), BOLD_OFF, SIZE_NORMAL);
+  parts.push(ALIGN_C, SIZE_DOUBLE, BOLD_ON);
+  for (const nameLine of wrapTextColumns(restaurantName, Math.floor(W / 2))) {
+    parts.push(line(nameLine));
+  }
+  parts.push(BOLD_OFF, SIZE_NORMAL);
   parts.push(ALIGN_C, line('--- ใบเสร็จ / RECEIPT ---'));
   parts.push(ALIGN_L, line(pad(orderQueueLabel(order), orderLocationLabel(order), W)));
   parts.push(line(`Order #${order.id}`));
   parts.push(line(new Date(order.created_at).toLocaleString('th-TH')));
   parts.push(rule(W));
-  for (const [index, it] of order.items.entries()) {
+  for (const it of order.items) {
     const variantSuffix = it.variant_name ? ` (${it.variant_name})` : '';
-    parts.push(line(pad(`${index + 1}. ${it.quantity} x ${it.product_name}${variantSuffix}`, '', W - 8)));
+    parts.push(line(pad(`${it.quantity} x ${it.product_name}${variantSuffix}`, '', W - 8)));
     parts.push(line(`  [${fulfillmentText(itemFulfillmentType(order, it))}]`));
     const lineTotal = (Number(it.unit_price) * it.quantity).toFixed(2);
     parts.push(line(pad(`  @${Number(it.unit_price).toFixed(2)}`, lineTotal, W)));
@@ -208,6 +263,99 @@ function buildCustomerReceipt(order, opts = {}) {
   return Buffer.concat(parts);
 }
 
+// QR label for handing a paper QR to customers as an alternative to
+// showing the screen. Uses the existing thermal printer infrastructure
+// so the label comes out on the same paper as receipts.
+function buildQrLabel({
+  url,
+  tableName = '',
+  tableCode = '',
+  storeName = '',
+  storeLogo = '',
+  note = 'สแกน QR เพื่อสั่งอาหาร',
+  footer = 'ขอบคุณที่ใช้บริการ',
+  qrSize = 8,
+} = {}, opts = {}) {
+  const W = opts.width || 42;
+  const cp = opts.thaiCp ?? 21;
+  const parts = [INIT, selectCodePage(cp)];
+  const header = [storeLogo, storeName].filter(Boolean).join(' ').trim();
+  if (header) {
+    parts.push(ALIGN_C, SIZE_DOUBLE, BOLD_ON);
+    for (const headLine of wrapTextColumns(header, Math.floor(W / 2))) {
+      parts.push(line(headLine));
+    }
+    parts.push(BOLD_OFF, SIZE_NORMAL);
+  }
+  parts.push(ALIGN_C, line(note));
+  parts.push(rule(W));
+  if (tableName) {
+    parts.push(ALIGN_C, SIZE_DOUBLE, BOLD_ON, line(tableName), BOLD_OFF, SIZE_NORMAL);
+  }
+  if (tableCode) parts.push(ALIGN_C, line(tableCode));
+  parts.push(LF);
+  parts.push(ALIGN_C, escposQr(url || '', Math.max(3, Math.min(8, Number(qrSize) || 8))));
+  parts.push(LF);
+  if (url) parts.push(ALIGN_C, line(url));
+  parts.push(rule(W));
+  if (footer) parts.push(ALIGN_C, line(footer));
+  parts.push(feedLines(opts), cutCommand(opts, 'partial'));
+  return Buffer.concat(parts);
+}
+
+async function queueBarcodeLabel(opts, { createdBy, force, station } = {}) {
+  if (!opts?.barcode) {
+    const err = new Error('barcode required');
+    err.status = 400;
+    throw err;
+  }
+  const cfg = station ? printerConfigForTarget(station) : printerConfig();
+  // Text-mode ESC/POS printers can request a CODE128 barcode natively
+  // (GS k ...), but rendering reliability varies. The bitmap path works
+  // on any thermal printer that accepts raster — including image-mode
+  // A70Pro. Keep it simple: always bitmap.
+  const payload = bitmap.buildBarcodeLabelBitmap(opts, cfg);
+  const labelParts = ['Barcode'];
+  if (opts.name) labelParts.push(opts.name);
+  if (opts.barcode) labelParts.push(`(${opts.barcode})`);
+  return enqueueJob({
+    type: 'barcode',
+    createdBy,
+    force,
+    dedupeKey: null,
+    label: labelParts.join(' '),
+    payload,
+    printerOverride: cfg,
+  });
+}
+
+async function queueQrLabel(opts, { createdBy, force } = {}) {
+  if (!opts?.url) {
+    const err = new Error('url required');
+    err.status = 400;
+    throw err;
+  }
+  const cfg = printerConfig();
+  // Image-mode printers don't render Thai via TIS-620 — they render
+  // glyphs from a font file. Use the bitmap builder for them so the
+  // QR label shows correct Thai (ชื่อร้าน, ชื่อโต๊ะ, ขอบคุณ ...).
+  const payload = cfg.renderMode === 'image'
+    ? bitmap.buildQrLabelBitmap(opts, cfg)
+    : buildQrLabel(opts, cfg);
+  const labelParts = ['QR'];
+  if (opts.tableName) labelParts.push(opts.tableName);
+  if (opts.tableCode) labelParts.push(`(${opts.tableCode})`);
+  return enqueueJob({
+    type: 'qr',
+    createdBy,
+    force,
+    dedupeKey: null,
+    label: labelParts.join(' '),
+    payload,
+    printerOverride: cfg,
+  });
+}
+
 function buildTestPayload(opts = {}) {
   const W = opts.width || 42;
   const cp = opts.thaiCp ?? 21;
@@ -228,6 +376,199 @@ function classifyPrinterError(err) {
     message: err?.message || String(err),
     retryable: !['EINVAL', 'ENOTFOUND'].includes(code),
   };
+}
+
+const RAW_PRINT_POWERSHELL = `
+$ErrorActionPreference = 'Stop'
+$printerName = $args[0]
+$dataPath = $args[1]
+if ([string]::IsNullOrWhiteSpace($printerName)) { throw 'missing printer name' }
+if (!(Test-Path -LiteralPath $dataPath)) { throw ('payload not found: ' + $dataPath) }
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public class PosRawPrinter {
+  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+  public class DOCINFO {
+    [MarshalAs(UnmanagedType.LPWStr)] public string pDocName;
+    [MarshalAs(UnmanagedType.LPWStr)] public string pOutputFile;
+    [MarshalAs(UnmanagedType.LPWStr)] public string pDataType;
+  }
+  [DllImport("winspool.Drv", EntryPoint = "OpenPrinterW", SetLastError = true, CharSet = CharSet.Unicode)]
+  public static extern bool OpenPrinter(string src, out IntPtr hPrinter, IntPtr pd);
+  [DllImport("winspool.Drv", SetLastError = true)]
+  public static extern bool ClosePrinter(IntPtr hPrinter);
+  [DllImport("winspool.Drv", EntryPoint = "StartDocPrinterW", SetLastError = true, CharSet = CharSet.Unicode)]
+  public static extern bool StartDocPrinter(IntPtr hPrinter, int level, [In] DOCINFO di);
+  [DllImport("winspool.Drv", SetLastError = true)]
+  public static extern bool EndDocPrinter(IntPtr hPrinter);
+  [DllImport("winspool.Drv", SetLastError = true)]
+  public static extern bool StartPagePrinter(IntPtr hPrinter);
+  [DllImport("winspool.Drv", SetLastError = true)]
+  public static extern bool EndPagePrinter(IntPtr hPrinter);
+  [DllImport("winspool.Drv", SetLastError = true)]
+  public static extern bool WritePrinter(IntPtr hPrinter, IntPtr pBytes, int dwCount, out int dwWritten);
+  static Exception LastWin32(string action) {
+    return new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), action);
+  }
+  public static int SendBytes(string printerName, byte[] bytes) {
+    IntPtr hPrinter;
+    if (!OpenPrinter(printerName, out hPrinter, IntPtr.Zero)) throw LastWin32("OpenPrinter");
+    IntPtr unmanaged = Marshal.AllocCoTaskMem(bytes.Length);
+    try {
+      Marshal.Copy(bytes, 0, unmanaged, bytes.Length);
+      DOCINFO di = new DOCINFO();
+      di.pDocName = "POS V2 Raw Print";
+      di.pDataType = "RAW";
+      if (!StartDocPrinter(hPrinter, 1, di)) throw LastWin32("StartDocPrinter");
+      try {
+        if (!StartPagePrinter(hPrinter)) throw LastWin32("StartPagePrinter");
+        try {
+          int written;
+          if (!WritePrinter(hPrinter, unmanaged, bytes.Length, out written)) throw LastWin32("WritePrinter");
+          if (written != bytes.Length) throw new Exception("Short write: " + written + "/" + bytes.Length);
+          return written;
+        } finally { EndPagePrinter(hPrinter); }
+      } finally { EndDocPrinter(hPrinter); }
+    } finally {
+      Marshal.FreeCoTaskMem(unmanaged);
+      ClosePrinter(hPrinter);
+    }
+  }
+}
+'@
+$bytes = [System.IO.File]::ReadAllBytes($dataPath)
+$written = [PosRawPrinter]::SendBytes($printerName, $bytes)
+Write-Output ("written=" + $written)
+`;
+
+function parseWindowsPrinterName(value) {
+  const text = String(value || '').trim();
+  const m = text.match(/^(?:winspool|windows-printer|windows|spooler):(.+)$/i);
+  return m ? m[1].trim() : null;
+}
+
+function normalizeTransport(value) {
+  const text = String(value || '').trim().toLowerCase();
+  if (['winspool', 'windows', 'windows-printer', 'windows_printer', 'spooler'].includes(text)) return 'winspool';
+  return 'tcp';
+}
+
+function runPowerShell(args, timeoutMs = 8000) {
+  return new Promise((resolve, reject) => {
+    const exe = process.env.POWERSHELL_EXE || 'powershell.exe';
+    const child = spawn(exe, args, { windowsHide: true });
+    let stdout = '';
+    let stderr = '';
+    let done = false;
+    const timer = setTimeout(() => {
+      if (done) return;
+      done = true;
+      child.kill();
+      const err = new Error(`PowerShell timeout after ${timeoutMs}ms`);
+      err.code = 'POWERSHELL_TIMEOUT';
+      reject(err);
+    }, timeoutMs);
+    child.stdout.on('data', (d) => { stdout += d.toString(); });
+    child.stderr.on('data', (d) => { stderr += d.toString(); });
+    child.on('error', (err) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      reject(err);
+    });
+    child.on('close', (code) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      if (code === 0) return resolve({ stdout, stderr });
+      const err = new Error((stderr || stdout || `PowerShell exited ${code}`).trim());
+      err.code = 'WINDOWS_PRINTER_ERROR';
+      reject(err);
+    });
+  });
+}
+
+async function runPowerShellFile(script, scriptArgs = [], timeoutMs = 8000) {
+  const file = path.join(os.tmpdir(), `pos-v2-ps-${process.pid}-${randomUUID()}.ps1`);
+  await fs.writeFile(file, script, 'utf8');
+  try {
+    return await runPowerShell([
+      '-NoProfile',
+      '-NonInteractive',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-File',
+      file,
+      ...scriptArgs,
+    ], timeoutMs);
+  } finally {
+    fs.unlink(file).catch(() => {});
+  }
+}
+
+async function sendToWindowsPrinter(printerName, buffer, timeoutMs = 8000) {
+  if (!printerName) {
+    const err = new Error('Windows printer name is not configured');
+    err.code = 'WINDOWS_PRINTER_UNCONFIGURED';
+    throw err;
+  }
+  const startedAt = Date.now();
+  const file = path.join(os.tmpdir(), `pos-v2-print-${process.pid}-${randomUUID()}.bin`);
+  await fs.writeFile(file, buffer);
+  try {
+    await runPowerShellFile(RAW_PRINT_POWERSHELL, [printerName, file], Math.max(timeoutMs, 8000));
+    const queued = await inspectWindowsPrintQueue(printerName, Math.min(2500, Math.max(800, timeoutMs - 500)));
+    if (queued?.has_error) {
+      const err = new Error(`Windows print queue error for "${printerName}": ${queued.job_status || 'Error'}`);
+      err.code = 'WINDOWS_PRINT_QUEUE_ERROR';
+      throw err;
+    }
+    return {
+      transport: 'winspool',
+      windows_printer_name: printerName,
+      elapsed_ms: Date.now() - startedAt,
+      bytes_written: buffer.length,
+    };
+  } catch (err) {
+    Object.assign(err, {
+      code: err.code || 'WINDOWS_PRINTER_ERROR',
+      printer_meta: {
+        transport: 'winspool',
+        windows_printer_name: printerName,
+        elapsed_ms: Date.now() - startedAt,
+        bytes_written: 0,
+      },
+    });
+    throw err;
+  } finally {
+    fs.unlink(file).catch(() => {});
+  }
+}
+
+async function inspectWindowsPrintQueue(printerName, waitMs = 1000) {
+  const script = `
+$ErrorActionPreference = 'Stop'
+Start-Sleep -Milliseconds ([int]$args[1])
+$job = Get-PrintJob -PrinterName $args[0] -ErrorAction SilentlyContinue |
+  Sort-Object SubmittedTime -Descending |
+  Select-Object -First 1
+if ($null -eq $job) {
+  [pscustomobject]@{ has_job = $false; has_error = $false } | ConvertTo-Json -Compress
+} else {
+  $status = [string]$job.JobStatus
+  [pscustomobject]@{
+    has_job = $true
+    has_error = $status -match 'Error|Blocked|Offline|Paper|UserIntervention'
+    id = $job.Id
+    job_status = $status
+    document_name = $job.DocumentName
+    size = $job.Size
+  } | ConvertTo-Json -Compress
+}
+`;
+  const { stdout } = await runPowerShellFile(script, [printerName, String(waitMs)], waitMs + 4000);
+  try { return JSON.parse(stdout || '{}'); } catch { return null; }
 }
 
 function sendToPrinter(host, port, buffer, timeoutMs = 3000) {
@@ -302,11 +643,19 @@ function printerConfig() {
   const enabled = (process.env.PRINTER_ENABLED || 'true').toLowerCase() !== 'false';
   const host = process.env.PRINTER_HOST || null;
   const port = parseInt(process.env.PRINTER_PORT, 10) || 9100;
+  const windowsPrinterName = process.env.PRINTER_WINDOWS_NAME || parseWindowsPrinterName(process.env.PRINTER_KEY);
+  const transport = normalizeTransport(process.env.PRINTER_TRANSPORT || (windowsPrinterName ? 'winspool' : 'tcp'));
   return {
     enabled,
+    transport,
     host,
     port,
-    printerKey: process.env.PRINTER_KEY || `${host || 'unconfigured'}:${port}`,
+    windowsPrinterName,
+    printerKey: process.env.PRINTER_KEY || (
+      transport === 'winspool'
+        ? `winspool:${windowsPrinterName || 'unconfigured'}`
+        : `${host || 'unconfigured'}:${port}`
+    ),
     timeout: parseInt(process.env.PRINTER_TIMEOUT_MS, 10) || 3000,
     thaiCp: parseInt(process.env.PRINTER_THAI_CP, 10) || 21,
     width: parseInt(process.env.PRINTER_WIDTH_CHARS, 10) || 42,
@@ -334,15 +683,25 @@ function printerConfig() {
 function printerConfigForTarget(target = {}) {
   const base = printerConfig();
   const stationKey = target.key || target.station_key || target.print_station_key;
-  const host = target.printer_host ?? target.host ?? base.host;
-  const port = parseInt(target.printer_port ?? target.port, 10) || base.port;
-  const printerKey = target.printer_key || target.printerKey ||
-    (stationKey ? `station:${stationKey}` : base.printerKey);
+  const rawPrinterKey = target.printer_key || target.printerKey || null;
+  const targetWindowsPrinterName = target.windows_printer_name || target.windowsPrinterName ||
+    parseWindowsPrinterName(rawPrinterKey) || parseWindowsPrinterName(target.printer_host ?? target.host);
+  const transport = normalizeTransport(target.printer_transport || target.transport || (targetWindowsPrinterName ? 'winspool' : base.transport));
+  const windowsPrinterName = targetWindowsPrinterName || (transport === 'winspool' ? base.windowsPrinterName : null);
+  const host = transport === 'winspool' ? null : (target.printer_host ?? target.host ?? base.host);
+  const port = transport === 'winspool' ? null : (parseInt(target.printer_port ?? target.port, 10) || base.port);
+  const printerKey = rawPrinterKey || (
+    transport === 'winspool'
+      ? `winspool:${windowsPrinterName || 'unconfigured'}`
+      : (stationKey ? `station:${stationKey}` : base.printerKey)
+  );
   return {
     ...base,
+    transport,
     host,
     port,
     printerKey,
+    windowsPrinterName,
     thaiCp: clampInt(target.thai_cp ?? target.thaiCp, base.thaiCp, 0, 255),
     width: clampInt(target.width_chars ?? target.width, base.width, 16, 80),
     renderMode: String(target.render_mode || target.renderMode || base.renderMode).toLowerCase(),
@@ -377,6 +736,38 @@ async function loadActivePrintStation(key) {
   }
 }
 
+async function loadPrintStation(key) {
+  try {
+    const { rows } = await db.query(
+      `SELECT *
+         FROM print_stations
+        WHERE key = $1
+        LIMIT 1`,
+      [key]
+    );
+    return rows[0] || null;
+  } catch (e) {
+    if (e.code === '42P01' || e.code === '42703') return null;
+    throw e;
+  }
+}
+
+function disabledStationError(key) {
+  const err = new Error(`print station "${key}" is disabled`);
+  err.code = 'PRINT_STATION_DISABLED';
+  err.status = 409;
+  return err;
+}
+
+function printerStatusHost(cfg) {
+  return cfg.transport === 'winspool' ? cfg.windowsPrinterName : cfg.host;
+}
+
+function isPrinterConfigured(cfg) {
+  if (!cfg.enabled) return false;
+  return cfg.transport === 'winspool' ? !!cfg.windowsPrinterName : !!cfg.host;
+}
+
 async function recordPrinterStatus(status, details = {}, target = null) {
   const cfg = target ? printerConfigForTarget(target) : printerConfig();
   try {
@@ -400,7 +791,7 @@ async function recordPrinterStatus(status, details = {}, target = null) {
             ELSE printer_status.consecutive_failures + 1
           END,
           updated_at = NOW()`,
-      [cfg.printerKey, cfg.host, cfg.port, status,
+      [cfg.printerKey, printerStatusHost(cfg), cfg.port, status,
        details.error || null, details.code || null, details.latency_ms || null]
     );
   } catch (err) {
@@ -432,27 +823,83 @@ function probePrinter(host, port, timeoutMs = 1500) {
   });
 }
 
+async function probeWindowsPrinter(printerName, timeoutMs = 3000) {
+  const script = `
+$ErrorActionPreference = 'Stop'
+$p = Get-Printer -Name $args[0] -ErrorAction Stop
+[pscustomobject]@{
+  name = $p.Name
+  driver_name = $p.DriverName
+  port_name = $p.PortName
+  printer_status = [string]$p.PrinterStatus
+  work_offline = [bool]$p.WorkOffline
+} | ConvertTo-Json -Compress
+`;
+  const startedAt = Date.now();
+  const { stdout } = await runPowerShellFile(script, [printerName], Math.max(timeoutMs, 3000));
+  let parsed = {};
+  try { parsed = JSON.parse(stdout || '{}'); } catch {}
+  if (parsed.work_offline) {
+    const err = new Error(`Windows printer "${printerName}" is offline`);
+    err.code = 'WINDOWS_PRINTER_OFFLINE';
+    throw err;
+  }
+  return { latency_ms: Date.now() - startedAt, ...parsed };
+}
+
+async function listWindowsPrinters() {
+  if (process.platform !== 'win32') return [];
+  const script = `
+$ErrorActionPreference = 'Stop'
+Get-Printer |
+  Select-Object Name, DriverName, PortName, PrinterStatus, WorkOffline |
+  ConvertTo-Json -Compress
+`;
+  const { stdout } = await runPowerShellFile(script, [], 6000);
+  const parsed = JSON.parse(stdout || '[]');
+  return (Array.isArray(parsed) ? parsed : [parsed]).map((p) => ({
+    name: p.Name,
+    driver_name: p.DriverName,
+    port_name: p.PortName,
+    printer_status: String(p.PrinterStatus ?? ''),
+    work_offline: !!p.WorkOffline,
+  }));
+}
+
 async function runHealthCheck(target = null) {
   const cfg = target ? printerConfigForTarget(target) : printerConfig();
-  if (!cfg.enabled || !cfg.host) {
-    await recordPrinterStatus('unconfigured', { error: `enabled=${cfg.enabled}, host=${cfg.host}` }, cfg);
+  if (!isPrinterConfigured(cfg)) {
+    await recordPrinterStatus('unconfigured', {
+      error: `enabled=${cfg.enabled}, transport=${cfg.transport}, target=${printerStatusHost(cfg) || 'none'}`,
+    }, cfg);
     return { status: 'unconfigured' };
   }
   try {
-    const latencyMs = await probePrinter(cfg.host, cfg.port, Math.min(cfg.timeout, 2000));
+    const health = cfg.transport === 'winspool'
+      ? await probeWindowsPrinter(cfg.windowsPrinterName, Math.min(cfg.timeout, 4000))
+      : { latency_ms: await probePrinter(cfg.host, cfg.port, Math.min(cfg.timeout, 2000)) };
+    const latencyMs = health.latency_ms;
     await recordPrinterStatus('online', { latency_ms: latencyMs }, cfg);
-    logger.debug('printer.health', 'printer online', { host: cfg.host, port: cfg.port, latency_ms: latencyMs });
-    return { status: 'online', latency_ms: latencyMs };
+    logger.debug('printer.health', 'printer online', {
+      transport: cfg.transport,
+      host: cfg.host,
+      port: cfg.port,
+      windows_printer_name: cfg.windowsPrinterName,
+      latency_ms: latencyMs,
+    });
+    return { status: 'online', transport: cfg.transport, ...health };
   } catch (err) {
     const classified = classifyPrinterError(err);
     await recordPrinterStatus('offline', classified, cfg);
     logger.warn('printer.health', 'printer offline', {
+      transport: cfg.transport,
       host: cfg.host,
       port: cfg.port,
+      windows_printer_name: cfg.windowsPrinterName,
       code: classified.code,
       error: classified.message,
     });
-    return { status: 'offline', ...classified };
+    return { status: 'offline', transport: cfg.transport, ...classified };
   }
 }
 
@@ -460,9 +907,9 @@ async function getPrinterStatus(target = null) {
   const cfg = target ? printerConfigForTarget(target) : printerConfig();
   try {
     const { rows } = await db.query('SELECT * FROM printer_status WHERE printer_key = $1', [cfg.printerKey]);
-    return rows[0] || { printer_key: cfg.printerKey, host: cfg.host, port: cfg.port, status: 'unknown' };
+    return rows[0] || { printer_key: cfg.printerKey, host: printerStatusHost(cfg), port: cfg.port, status: 'unknown' };
   } catch (err) {
-    if (err.code === '42P01') return { printer_key: cfg.printerKey, host: cfg.host, port: cfg.port, status: 'migration_required' };
+    if (err.code === '42P01') return { printer_key: cfg.printerKey, host: printerStatusHost(cfg), port: cfg.port, status: 'migration_required' };
     throw err;
   }
 }
@@ -725,8 +1172,8 @@ async function workerLoop() {
       printer_port: job.printer_port,
     });
 
-    if (!jobCfg.enabled || !jobCfg.host) {
-      const err = new Error(`printer not configured (enabled=${jobCfg.enabled}, host=${jobCfg.host})`);
+    if (!isPrinterConfigured(jobCfg)) {
+      const err = new Error(`printer not configured (enabled=${jobCfg.enabled}, transport=${jobCfg.transport}, target=${printerStatusHost(jobCfg) || 'none'})`);
       err.code = 'PRINTER_UNCONFIGURED';
       const classified = classifyPrinterError(err);
       const nextStatus = await markFailedOrRequeue(job, err, classified, jobCfg);
@@ -741,15 +1188,19 @@ async function workerLoop() {
     }
 
     try {
-      const meta = await sendToPrinter(jobCfg.host, jobCfg.port, job.payload, jobCfg.timeout);
+      const meta = jobCfg.transport === 'winspool'
+        ? await sendToWindowsPrinter(jobCfg.windowsPrinterName, job.payload, jobCfg.timeout)
+        : await sendToPrinter(jobCfg.host, jobCfg.port, job.payload, jobCfg.timeout);
       await markSuccess(job, meta, jobCfg);
       logger.info('printer.queue', 'job printed', {
         job_id: job.id,
         type: job.type,
         order_id: job.order_id,
         printer_key: jobCfg.printerKey,
+        transport: jobCfg.transport,
         host: jobCfg.host,
         port: jobCfg.port,
+        windows_printer_name: jobCfg.windowsPrinterName,
         attempts: job.attempts,
         elapsed_ms: meta.elapsed_ms,
         bytes_written: meta.bytes_written,
@@ -764,8 +1215,10 @@ async function workerLoop() {
         type: job.type,
         order_id: job.order_id,
         printer_key: jobCfg.printerKey,
+        transport: jobCfg.transport,
         host: jobCfg.host,
         port: jobCfg.port,
+        windows_printer_name: jobCfg.windowsPrinterName,
         attempts: job.attempts,
         max_attempts: job.max_attempts,
         status: nextStatus,
@@ -820,6 +1273,7 @@ async function queueOrderKitchen(order, {
   stationKey = null,
   stationLabel = null,
 } = {}) {
+  if (printerOverride?.is_active === false) throw disabledStationError(stationKey || printerOverride.key || 'kitchen');
   const cfg = printerOverride
     ? printerConfigForTarget({ ...printerOverride, key: stationKey || printerOverride.key, station_label: stationLabel })
     : printerConfig();
@@ -849,7 +1303,8 @@ async function queueOrderReceipt(order, {
   force,
   printerOverride = null,
 } = {}) {
-  const receiptStation = printerOverride || await loadActivePrintStation('receipt');
+  const receiptStation = printerOverride || await loadPrintStation('receipt');
+  if (receiptStation?.is_active === false) throw disabledStationError('receipt');
   const cfg = receiptStation ? printerConfigForTarget(receiptStation) : printerConfig();
   const payload = cfg.renderMode === 'image'
     ? bitmap.buildReceiptBitmap(order, { ...cfg, restaurantName, paymentSettings })
@@ -885,19 +1340,24 @@ async function queueTest({ createdBy, force, printerOverride = null } = {}) {
 module.exports = {
   buildKitchenReceipt,
   buildCustomerReceipt,
+  buildQrLabel,
   buildTestPayload,
   sendToPrinter,
+  sendToWindowsPrinter,
   classifyPrinterError,
   printerConfig,
   printerConfigForTarget,
   queueOrderKitchen,
   queueOrderReceipt,
+  queueQrLabel,
+  queueBarcodeLabel,
   queueTest,
   listJobs,
   retryJob,
   cancelJob,
   getPrinterStatus,
   runHealthCheck,
+  listWindowsPrinters,
   startWorker,
   stopWorker,
   wakeWorker,

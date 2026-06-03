@@ -93,16 +93,33 @@ function isOrderingOpen(settings, now = new Date()) {
   };
 }
 
-async function loadPublicOrderingSettings() {
-  const { rows } = await db.query(
-    `SELECT ordering_enabled, ordering_open_time, ordering_close_time,
-            ordering_timezone, ordering_days, ordering_require_session,
-            ordering_require_private_ip, ordering_require_gps,
-            ordering_shop_lat, ordering_shop_lng, ordering_max_distance_m
-       FROM restaurant_settings
-      WHERE id = 1`
-  );
-  const s = rows[0] || {};
+async function loadPublicOrderingSettings(storeId = 1) {
+  let s = null;
+  try {
+    const { rows } = await db.query(
+      `SELECT ordering_enabled, ordering_open_time, ordering_close_time,
+              ordering_timezone, ordering_days, ordering_require_session,
+              ordering_require_private_ip, ordering_require_gps,
+              ordering_shop_lat, ordering_shop_lng, ordering_max_distance_m
+         FROM stores
+        WHERE id = $1 AND is_active = TRUE`,
+      [storeId || 1]
+    );
+    s = rows[0];
+  } catch (e) {
+    if (e.code !== '42P01' && e.code !== '42703') throw e;
+  }
+  if (!s) {
+    const fallback = await db.query(
+      `SELECT ordering_enabled, ordering_open_time, ordering_close_time,
+              ordering_timezone, ordering_days, ordering_require_session,
+              ordering_require_private_ip, ordering_require_gps,
+              ordering_shop_lat, ordering_shop_lng, ordering_max_distance_m
+         FROM restaurant_settings
+        WHERE id = 1`
+    );
+    s = fallback.rows[0] || {};
+  }
   return {
     ordering_enabled: s.ordering_enabled !== false,
     ordering_open_time: normalizeTime(s.ordering_open_time, '00:00'),
@@ -416,8 +433,8 @@ function sessionTokenFromRequest(req, body = null) {
   );
 }
 
-async function getPublicOrderState(req, body = null) {
-  const settings = await loadPublicOrderingSettings();
+async function getPublicOrderState(req, body = null, storeId = 1) {
+  const settings = await loadPublicOrderingSettings(storeId);
   const schedule = isOrderingOpen(settings);
   const network = getNetworkAccessState(req, settings);
   const location = getLocationAccessState(req, settings, {
@@ -457,22 +474,23 @@ async function getPublicOrderState(req, body = null) {
   };
 }
 
-async function issueCustomerSession(tableId, req, customerKey) {
+async function issueCustomerSession(tableId, req, customerKey, storeId = 1) {
   const key = normalizeCustomerKey(customerKey) || randomToken(18);
   const ip = clientIp(req);
   const uaHash = hashUserAgent(req);
 
   const existing = await db.query(
     `SELECT id, session_token, customer_key, expires_at
-       FROM customer_order_sessions
-      WHERE table_id = $1
+      FROM customer_order_sessions
+      WHERE store_id = $4
+        AND table_id = $1
         AND customer_key = $2
         AND is_active = TRUE
         AND expires_at > NOW()
         AND (user_agent_hash IS NULL OR user_agent_hash = $3)
       ORDER BY last_seen_at DESC
       LIMIT 1`,
-    [tableId, key, uaHash]
+    [tableId, key, uaHash, storeId || 1]
   );
   if (existing.rows[0]) {
     const row = existing.rows[0];
@@ -488,10 +506,10 @@ async function issueCustomerSession(tableId, req, customerKey) {
   const expiresAt = new Date(Date.now() + SESSION_TTL_HOURS * 60 * 60 * 1000);
   const { rows } = await db.query(
     `INSERT INTO customer_order_sessions
-       (session_token, table_id, customer_key, first_ip, last_ip, user_agent_hash, expires_at)
-     VALUES ($1, $2, $3, $4, $4, $5, $6)
+       (store_id, session_token, table_id, customer_key, first_ip, last_ip, user_agent_hash, expires_at)
+     VALUES ($1, $2, $3, $4, $5, $5, $6, $7)
      RETURNING id, session_token, customer_key, expires_at`,
-    [randomToken(36), tableId, key, ip || null, uaHash, expiresAt]
+    [storeId || 1, randomToken(36), tableId, key, ip || null, uaHash, expiresAt]
   );
   logger.info('public-order', 'customer order session issued', {
     session_id: rows[0].id,
@@ -501,7 +519,7 @@ async function issueCustomerSession(tableId, req, customerKey) {
   return rows[0];
 }
 
-async function validateCustomerSession({ tableId, req, settings, customerKey, sessionToken }) {
+async function validateCustomerSession({ tableId, req, settings, customerKey, sessionToken, storeId = 1 }) {
   if (settings.ordering_require_session === false) {
     return { ok: true, session_id: null };
   }
@@ -513,14 +531,15 @@ async function validateCustomerSession({ tableId, req, settings, customerKey, se
 
   const { rows } = await db.query(
     `SELECT id, user_agent_hash
-       FROM customer_order_sessions
+      FROM customer_order_sessions
       WHERE session_token = $1
+        AND store_id = $4
         AND table_id = $2
         AND customer_key = $3
         AND is_active = TRUE
         AND expires_at > NOW()
       LIMIT 1`,
-    [token, tableId, key]
+    [token, tableId, key, storeId || 1]
   );
   const row = rows[0];
   const uaHash = hashUserAgent(req);

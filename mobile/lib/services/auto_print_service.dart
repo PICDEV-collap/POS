@@ -49,8 +49,7 @@ class AutoPrintService {
       socket.on('order:new', _onOrderEvent);
     }
     unawaited(_restorePending());
-    if (printer.hasPrinter &&
-        (printer.autoPrintKitchen || printer.autoPrintReceipt)) {
+    if (printer.hasPrinter && printer.autoPrintKitchen) {
       unawaited(printer.warmUp());
     }
     kick();
@@ -58,8 +57,7 @@ class AutoPrintService {
 
   void resume() {
     start();
-    if (printer.hasPrinter &&
-        (printer.autoPrintKitchen || printer.autoPrintReceipt)) {
+    if (printer.hasPrinter && printer.autoPrintKitchen) {
       unawaited(printer.warmUp());
     }
     kick();
@@ -77,7 +75,6 @@ class AutoPrintService {
     if (!auth.isLoggedIn) return;
     if (!printer.hasPrinter) return;
     if (printer.autoPrintKitchen) _enqueue(id, 'kitchen');
-    if (printer.autoPrintReceipt) _enqueue(id, 'receipt');
   }
 
   void kick() {
@@ -243,7 +240,7 @@ class AutoPrintService {
   bool _isEnabled(String type) {
     return type == 'kitchen'
         ? printer.autoPrintKitchen
-        : printer.autoPrintReceipt;
+        : false;
   }
 
   void _markRetry(_AutoPrintJob job, String error) {

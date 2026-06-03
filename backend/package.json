@@ -10,8 +10,10 @@
     "db:init": "node scripts/db-init.js",
     "db:seed": "node scripts/db-seed.js",
     "db:migrate": "node scripts/migrate.js",
-    "db:reset": "node scripts/db-init.js && node scripts/db-seed.js",
+    "db:reset": "node scripts/db-init.js && node scripts/migrate.js && node scripts/db-seed.js",
     "create-admin": "node scripts/create-admin.js",
+    "qa:smoke": "node scripts/qa-smoke.js",
+    "verify:multi-store": "node scripts/verify-multi-store.js",
     "rotate-secrets": "node scripts/rotate-secrets.js"
   },
   "dependencies": {

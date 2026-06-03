@@ -4,7 +4,10 @@ const fs = require('fs');
 const crypto = require('crypto');
 const multer = require('multer');
 const db = require('../db');
+const { emit } = require('../socket');
+const { CODE128_PATTERNS, code128BValues } = require('../lib/code128');
 const { authRequired, requireRole } = require('../middleware/auth');
+const { resolveStoreId } = require('../lib/storeScope');
 const {
   attachNormalizedMenus,
   normalizeMenuPayload,
@@ -56,20 +59,6 @@ function stockNumber(value, fallback = 0) {
   return Number.isFinite(n) && n >= 0 ? n : fallback;
 }
 
-const CODE128_PATTERNS = [
-  '212222', '222122', '222221', '121223', '121322', '131222', '122213', '122312', '132212', '221213',
-  '221312', '231212', '112232', '122132', '122231', '113222', '123122', '123221', '223211', '221132',
-  '221231', '213212', '223112', '312131', '311222', '321122', '321221', '312212', '322112', '322211',
-  '212123', '212321', '232121', '111323', '131123', '131321', '112313', '132113', '132311', '211313',
-  '231113', '231311', '112133', '112331', '132131', '113123', '113321', '133121', '313121', '211331',
-  '231131', '213113', '213311', '213131', '311123', '311321', '331121', '312113', '312311', '332111',
-  '314111', '221411', '431111', '111224', '111422', '121124', '121421', '141122', '141221', '112214',
-  '112412', '122114', '122411', '142112', '142211', '241211', '221114', '413111', '241112', '134111',
-  '111242', '121142', '121241', '114212', '124112', '124211', '411212', '421112', '421211', '212141',
-  '214121', '412121', '111143', '111341', '131141', '114113', '114311', '411113', '411311', '113141',
-  '114131', '311141', '411131', '211412', '211214', '211232', '2331112',
-];
-
 function escapeXml(value) {
   return String(value ?? '')
     .replace(/&/g, '&amp;')
@@ -94,25 +83,6 @@ async function uniqueGeneratedBarcode(client, productId) {
     if (!rows[0]) return candidate;
   }
   return `SNK${Date.now().toString().slice(-10)}`;
-}
-
-function code128BValues(value) {
-  const raw = String(value || '').trim();
-  if (!raw) throw new Error('barcode required');
-  const values = [104]; // Code 128 Start B.
-  for (const ch of raw) {
-    const code = ch.charCodeAt(0);
-    if (code < 32 || code > 126) {
-      const err = new Error('barcode must contain ASCII characters only');
-      err.status = 400;
-      throw err;
-    }
-    values.push(code - 32);
-  }
-  let checksum = 104;
-  for (let i = 1; i < values.length; i++) checksum += values[i] * i;
-  values.push(checksum % 103, 106);
-  return values;
 }
 
 function code128Svg({ barcode, name, price, stockQty }) {
@@ -152,7 +122,7 @@ function code128Svg({ barcode, name, price, stockQty }) {
 }
 
 function productSelectSql() {
-  return `SELECT id, category_id, name, description, price, cost_price, image_url,
+  return `SELECT id, store_id, category_id, name, description, price, cost_price, image_url,
                  emoji, is_popular, options, variants,
                  is_available, sort_order, product_type, barcode, track_stock,
                  stock_qty, stock_alert_qty, print_station_key
@@ -163,6 +133,9 @@ router.get('/', async (req, res) => {
   const { category_id, available_only } = req.query;
   const filters = [];
   const params = [];
+  const storeId = Number(req.query.store_id || 1);
+  params.push(storeId);
+  filters.push(`store_id = $${params.length}`);
   if (category_id) {
     params.push(category_id);
     filters.push(`category_id = $${params.length}`);
@@ -172,7 +145,7 @@ router.get('/', async (req, res) => {
   }
   const where = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
   const { rows } = await db.query(
-    `SELECT id, category_id, name, description, price, image_url,
+    `SELECT id, store_id, category_id, name, description, price, image_url,
             emoji, is_popular, options, variants,
             is_available, sort_order, product_type, barcode, track_stock,
             stock_qty, stock_alert_qty, print_station_key
@@ -186,6 +159,8 @@ router.get('/admin', authRequired, requireRole('admin'), async (req, res) => {
   const { category_id, available_only } = req.query;
   const filters = [];
   const params = [];
+  params.push(resolveStoreId(req));
+  filters.push(`store_id = $${params.length}`);
   if (category_id) {
     params.push(category_id);
     filters.push(`category_id = $${params.length}`);
@@ -195,7 +170,7 @@ router.get('/admin', authRequired, requireRole('admin'), async (req, res) => {
   }
   const where = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
   const { rows } = await db.query(
-    `SELECT id, category_id, name, description, price, cost_price, image_url,
+    `SELECT id, store_id, category_id, name, description, price, cost_price, image_url,
             emoji, is_popular, options, variants,
             is_available, sort_order, product_type, barcode, track_stock,
             stock_qty, stock_alert_qty, print_station_key
@@ -207,6 +182,7 @@ router.get('/admin', authRequired, requireRole('admin'), async (req, res) => {
 
 router.post('/barcode/bulk-generate', authRequired, requireRole('admin'), async (req, res) => {
   const { category_id, category_name, force } = req.body || {};
+  const storeId = resolveStoreId(req);
   const client = await db.getClient();
   try {
     await client.query('BEGIN');
@@ -214,14 +190,16 @@ router.post('/barcode/bulk-generate', authRequired, requireRole('admin'), async 
     let where = '';
     if (category_id) {
       params.push(category_id);
-      where = `WHERE p.category_id = $${params.length}`;
+      where = `WHERE p.store_id = $${params.length + 1} AND p.category_id = $${params.length}`;
     } else if (category_name) {
       params.push(`%${String(category_name).trim()}%`);
-      where = `WHERE c.name ILIKE $${params.length}`;
+      where = `WHERE p.store_id = $${params.length + 1} AND c.name ILIKE $${params.length}`;
     } else {
-      where = `WHERE p.product_type = 'stock'
-                  OR c.name ~* '(ขนม|ขบเคี้ยว|snack|ของกินเล่น)'`;
+      where = `WHERE p.store_id = $${params.length + 1}
+                  AND (p.product_type = 'stock'
+                  OR c.name ~* '(ขนม|ขบเคี้ยว|snack|ของกินเล่น)')`;
     }
+    params.push(storeId);
     const target = await client.query(
       `SELECT p.id, p.barcode
          FROM products p
@@ -258,16 +236,17 @@ router.post('/barcode/bulk-generate', authRequired, requireRole('admin'), async 
 
 router.get('/barcode/:barcode', authRequired, requireRole('admin', 'staff'), async (req, res) => {
   const barcode = cleanBarcode(req.params.barcode);
+  const storeId = resolveStoreId(req);
   if (!barcode) return res.status(400).json({ error: 'barcode required' });
   const { rows } = await db.query(
-    `SELECT id, category_id, name, description, price, cost_price, image_url,
+    `SELECT id, store_id, category_id, name, description, price, cost_price, image_url,
             emoji, is_popular, options, variants,
             is_available, sort_order, product_type, barcode, track_stock,
             stock_qty, stock_alert_qty, print_station_key
        FROM products
-      WHERE barcode = $1 AND is_available = TRUE
+      WHERE barcode = $1 AND store_id = $2 AND is_available = TRUE
       LIMIT 1`,
-    [barcode]
+    [barcode, storeId]
   );
   if (!rows[0]) return res.status(404).json({ error: 'ไม่พบสินค้าจากบาร์โค้ดนี้' });
   res.json((await attachNormalizedMenus(db, rows))[0]);
@@ -275,10 +254,11 @@ router.get('/barcode/:barcode', authRequired, requireRole('admin', 'staff'), asy
 
 router.post('/:id/barcode/generate', authRequired, requireRole('admin'), async (req, res) => {
   const force = req.query.force === '1' || req.body?.force === true;
+  const storeId = resolveStoreId(req);
   const client = await db.getClient();
   try {
     await client.query('BEGIN');
-    const current = await client.query('SELECT id, barcode FROM products WHERE id = $1 FOR UPDATE', [req.params.id]);
+    const current = await client.query('SELECT id, barcode FROM products WHERE id = $1 AND store_id = $2 FOR UPDATE', [req.params.id, storeId]);
     if (!current.rows[0]) {
       await client.query('ROLLBACK');
       return res.status(404).json({ error: 'not found' });
@@ -307,11 +287,12 @@ router.post('/:id/barcode/generate', authRequired, requireRole('admin'), async (
 });
 
 router.get('/:id/barcode/label.svg', authRequired, requireRole('admin', 'staff'), async (req, res) => {
+  const storeId = resolveStoreId(req);
   const { rows } = await db.query(
     `SELECT p.id, p.name, p.price, p.barcode, p.stock_qty
        FROM products p
-      WHERE p.id = $1`,
-    [req.params.id]
+      WHERE p.id = $1 AND p.store_id = $2`,
+    [req.params.id, storeId]
   );
   const product = rows[0];
   if (!product) return res.status(404).json({ error: 'not found' });
@@ -328,13 +309,14 @@ router.get('/:id/barcode/label.svg', authRequired, requireRole('admin', 'staff')
 });
 
 router.get('/:id', async (req, res) => {
+  const storeId = Number(req.query.store_id || 1);
   const { rows } = await db.query(
-    `SELECT id, category_id, name, description, price, image_url,
+    `SELECT id, store_id, category_id, name, description, price, image_url,
             emoji, is_popular, options, variants,
             is_available, sort_order, product_type, barcode, track_stock,
             stock_qty, stock_alert_qty, print_station_key
-       FROM products WHERE id = $1`,
-    [req.params.id]
+       FROM products WHERE id = $1 AND store_id = $2`,
+    [req.params.id, storeId]
   );
   if (!rows[0]) return res.status(404).json({ error: 'not found' });
   res.json((await attachNormalizedMenus(db, rows))[0]);
@@ -344,6 +326,7 @@ router.post('/', authRequired, requireRole('admin'), async (req, res) => {
   const { category_id, name, description, price, image_url, sort_order,
           emoji, is_popular, options, variants, cost_price, product_type,
           barcode, track_stock, stock_qty, stock_alert_qty, print_station_key } = req.body || {};
+  const storeId = resolveStoreId(req);
   if (!name || price == null) return res.status(400).json({ error: 'name and price required' });
   const cost = cost_price == null || cost_price === '' ? 0 : Number(cost_price);
   if (!Number.isFinite(cost) || cost < 0) return res.status(400).json({ error: 'invalid cost_price' });
@@ -354,12 +337,12 @@ router.post('/', authRequired, requireRole('admin'), async (req, res) => {
   try {
     await client.query('BEGIN');
     const { rows } = await client.query(
-      `INSERT INTO products (category_id, name, description, price, cost_price, image_url, sort_order,
+      `INSERT INTO products (store_id, category_id, name, description, price, cost_price, image_url, sort_order,
                              emoji, is_popular, options, variants, product_type,
                              barcode, track_stock, stock_qty, stock_alert_qty, print_station_key)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::jsonb,
-               $12, $13, $14, $15, $16, $17) RETURNING *`,
-      [category_id || null, name, description || null, price, cost, image_url || null, sort_order || 0,
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12::jsonb,
+               $13, $14, $15, $16, $17, $18) RETURNING *`,
+      [storeId, category_id || null, name, description || null, price, cost, image_url || null, sort_order || 0,
        emoji || null, is_popular === true,
        menu.options ? JSON.stringify(menu.options) : null,
        menu.variants ? JSON.stringify(menu.variants) : null,
@@ -377,10 +360,43 @@ router.post('/', authRequired, requireRole('admin'), async (req, res) => {
   }
 });
 
+// Quick "ปิดการขาย / เปิดขาย" toggle for staff during a shift — flips
+// is_available without requiring the full product payload. Staff can
+// toggle so they can mark items sold out without admin access.
+router.patch('/:id/availability', authRequired, requireRole('admin', 'staff'), async (req, res) => {
+  const storeId = resolveStoreId(req);
+  const productId = parseInt(req.params.id, 10);
+  if (!Number.isInteger(productId) || productId <= 0) {
+    return res.status(400).json({ error: 'invalid product id' });
+  }
+  const raw = req.body?.is_available;
+  if (typeof raw !== 'boolean') {
+    return res.status(400).json({ error: 'is_available (boolean) required' });
+  }
+  const { rows } = await db.query(
+    `UPDATE products SET is_available = $1
+       WHERE id = $2 AND store_id = $3
+       RETURNING id, name, is_available`,
+    [raw, productId, storeId]
+  );
+  if (!rows[0]) return res.status(404).json({ error: 'not found' });
+  // Broadcast so every client (web staff/admin/customer + mobile) refreshes
+  // its menu without polling. Each listener decides what to do with the
+  // store_id (filter out events from other stores, or refetch the menu).
+  emit('product:availability', {
+    id: rows[0].id,
+    name: rows[0].name,
+    is_available: rows[0].is_available,
+    store_id: storeId,
+  });
+  res.json(rows[0]);
+});
+
 router.put('/:id', authRequired, requireRole('admin'), async (req, res) => {
   const { category_id, name, description, price, image_url, is_available, sort_order,
           emoji, is_popular, options, variants, cost_price, product_type,
           barcode, track_stock, stock_qty, stock_alert_qty, print_station_key } = req.body || {};
+  const storeId = resolveStoreId(req);
   const cost = cost_price === undefined || cost_price === null || cost_price === ''
     ? undefined
     : Number(cost_price);
@@ -391,8 +407,8 @@ router.put('/:id', authRequired, requireRole('admin'), async (req, res) => {
   try {
     await client.query('BEGIN');
     const current = await client.query(
-      'SELECT price, options, variants, product_type, barcode, print_station_key FROM products WHERE id = $1 FOR UPDATE',
-      [req.params.id]
+      'SELECT price, options, variants, product_type, barcode, print_station_key FROM products WHERE id = $1 AND store_id = $2 FOR UPDATE',
+      [req.params.id, storeId]
     );
     if (!current.rows[0]) {
       await client.query('ROLLBACK');
@@ -428,7 +444,7 @@ router.put('/:id', authRequired, requireRole('admin'), async (req, res) => {
          stock_qty    = COALESCE($16, stock_qty),
          stock_alert_qty = COALESCE($17, stock_alert_qty),
          print_station_key = COALESCE($18, print_station_key)
-       WHERE id = $19 RETURNING *`,
+       WHERE id = $19 AND store_id = $20 RETURNING *`,
       [category_id, name, description, price, cost, image_url, is_available, sort_order,
        emoji, is_popular,
        menu.options ? JSON.stringify(menu.options) : null,
@@ -439,7 +455,7 @@ router.put('/:id', authRequired, requireRole('admin'), async (req, res) => {
        stock_qty !== undefined ? stockNumber(stock_qty, 0) : undefined,
        stock_alert_qty !== undefined ? stockNumber(stock_alert_qty, 0) : undefined,
        print_station_key !== undefined || product_type !== undefined ? nextStation : undefined,
-       req.params.id]
+       req.params.id, storeId]
     );
     await saveNormalizedMenu(client, rows[0].id, menu);
     await client.query('COMMIT');
@@ -458,9 +474,10 @@ router.put('/:id', authRequired, requireRole('admin'), async (req, res) => {
 // orders/receipts keep displaying correctly even after the product row
 // is gone.
 router.delete('/:id', authRequired, requireRole('admin'), async (req, res) => {
-  const { rows } = await db.query('SELECT image_url FROM products WHERE id = $1', [req.params.id]);
+  const storeId = resolveStoreId(req);
+  const { rows } = await db.query('SELECT image_url FROM products WHERE id = $1 AND store_id = $2', [req.params.id, storeId]);
   if (!rows[0]) return res.status(404).json({ error: 'not found' });
-  await db.query('DELETE FROM products WHERE id = $1', [req.params.id]);
+  await db.query('DELETE FROM products WHERE id = $1 AND store_id = $2', [req.params.id, storeId]);
   if (rows[0].image_url) _unlinkLocalImage(rows[0].image_url);
   res.status(204).end();
 });
@@ -473,9 +490,10 @@ router.post(
   upload.single('image'),
   async (req, res) => {
     if (!req.file) return res.status(400).json({ error: 'no image uploaded' });
+    const storeId = resolveStoreId(req);
     const url = `/uploads/products/${req.file.filename}`;
     // Delete old image (best-effort) then update DB
-    const old = await db.query('SELECT image_url FROM products WHERE id = $1', [req.params.id]);
+    const old = await db.query('SELECT image_url FROM products WHERE id = $1 AND store_id = $2', [req.params.id, storeId]);
     if (!old.rows[0]) {
       // No such product — clean up the file we just wrote
       try { fs.unlinkSync(req.file.path); } catch {}
@@ -484,20 +502,21 @@ router.post(
     if (old.rows[0].image_url) _unlinkLocalImage(old.rows[0].image_url);
 
     const { rows } = await db.query(
-      'UPDATE products SET image_url = $1 WHERE id = $2 RETURNING *',
-      [url, req.params.id]
+      'UPDATE products SET image_url = $1 WHERE id = $2 AND store_id = $3 RETURNING *',
+      [url, req.params.id, storeId]
     );
     res.status(201).json(rows[0]);
   }
 );
 
 router.delete('/:id/image', authRequired, requireRole('admin'), async (req, res) => {
-  const { rows } = await db.query('SELECT image_url FROM products WHERE id = $1', [req.params.id]);
+  const storeId = resolveStoreId(req);
+  const { rows } = await db.query('SELECT image_url FROM products WHERE id = $1 AND store_id = $2', [req.params.id, storeId]);
   if (!rows[0]) return res.status(404).json({ error: 'not found' });
   if (rows[0].image_url) _unlinkLocalImage(rows[0].image_url);
   const upd = await db.query(
-    'UPDATE products SET image_url = NULL WHERE id = $1 RETURNING *',
-    [req.params.id]
+    'UPDATE products SET image_url = NULL WHERE id = $1 AND store_id = $2 RETURNING *',
+    [req.params.id, storeId]
   );
   res.json(upd.rows[0]);
 });
