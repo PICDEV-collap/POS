@@ -2,6 +2,7 @@
 const BACKEND_INTERNAL = process.env.BACKEND_INTERNAL_URL || 'http://localhost:4000';
 
 const nextConfig = {
+  output: 'standalone',
   reactStrictMode: true,
   env: {
     // When deployed behind ngrok / a single-port reverse proxy, set this to ''

@@ -1,0 +1,5 @@
+# Override: mount TLS Caddyfile (requires CADDY_DOMAIN in docker/.env)
+services:
+  proxy:
+    volumes:
+      - ./docker/Caddyfile.tls:/etc/caddy/Caddyfile:ro

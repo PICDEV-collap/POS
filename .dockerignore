@@ -1,0 +1,15 @@
+.git
+.github
+**/.env
+**/.env.*
+!docker/.env.example
+**/node_modules
+**/.next
+**/logs
+**/*.log
+backend/uploads/**
+mobile/build
+mobile/.dart_tool
+pos-v2-customer-web-login-admin-mobile-fix.patch
+**/.cursor
+**/agent-transcripts

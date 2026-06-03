@@ -217,7 +217,20 @@ Skip mobile only when the user explicitly limits the scope (e.g.
   `DO $$` block (so the migration is name-agnostic), then re-add.
 - **Comments**: minimum, only for non-obvious WHY. Don't restate WHAT.
 
-## 8. Useful commands cheat sheet
+## 8. Docker (optional)
+
+Compose stack: Postgres + backend + Next.js + nginx (`docker-compose.yml`).
+
+```bash
+cp docker/.env.example docker/.env   # edit secrets
+docker compose --env-file docker/.env up -d --build
+```
+
+Details: `deploy/docker/README.md`. Security notes: `deploy/SECURITY.md`.
+
+Windows in-store production still uses WinSW (`deploy/services/`); Docker suits staging/VPS/branch lab.
+
+## 9. Useful commands cheat sheet
 
 ```bash
 # DB
@@ -243,7 +256,7 @@ Health check URLs (replace host as needed):
 - `http://localhost:4000/api/discovery/info`
 - `http://localhost:3000/login`
 
-## 9. Where to look first
+## 10. Where to look first
 
 | Need to … | Start here |
 |-----------|-----------|
@@ -256,7 +269,7 @@ Health check URLs (replace host as needed):
 | Multi-store rule change | `backend/src/lib/storeScope.js`, `backend/src/lib/accessBoundary.js` |
 | Add a migration | `database/migrations/NNN_*.sql` then `node scripts/migrate.js` |
 
-## 10. Out of scope / handled elsewhere
+## 11. Out of scope / handled elsewhere
 
 - `mobile/` (Flutter) is phase 2.2 — touch only when explicitly asked.
 - `tools/`, `artifacts/` are scratch space, not loaded by the app.

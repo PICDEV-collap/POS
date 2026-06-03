@@ -4,6 +4,8 @@
 
 สำหรับ Raspberry Pi / ร้านสาขาใหม่แบบติดตั้งครั้งเดียว ดู `deploy/raspberry-pi/README.md`
 
+สำหรับ Docker (Postgres + API + Web + Nginx ในคอนเทนเนอร์) ดู `deploy/docker/README.md` และ `deploy/SECURITY.md`
+
 ## สิ่งที่ต้องเตรียม
 
 | Item | Why |

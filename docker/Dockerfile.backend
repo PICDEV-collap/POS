@@ -1,0 +1,34 @@
+# POS V2 — API + Socket.io + print worker
+FROM node:20-bookworm-slim
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    fontconfig \
+    fonts-dejavu-core \
+  && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY backend/package.json backend/package-lock.json ./
+RUN npm ci --omit=dev
+
+COPY backend/ ./
+COPY database/ /database/
+
+RUN useradd --system --uid 10001 --create-home pos \
+  && mkdir -p /app/uploads /app/logs \
+  && chown -R pos:pos /app
+
+COPY docker/entrypoint-backend.sh /app/docker-entrypoint.sh
+RUN chmod +x /app/docker-entrypoint.sh && chown pos:pos /app/docker-entrypoint.sh
+
+USER pos
+
+ENV NODE_ENV=production \
+    PORT=4000 \
+    LISTEN_HOST=0.0.0.0 \
+    PRINTER_FONT_PATH=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf
+
+EXPOSE 4000
+ENTRYPOINT ["/app/docker-entrypoint.sh"]

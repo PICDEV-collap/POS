@@ -1,6 +1,57 @@
 # POS_V2 — Security Hardening Checklist
 
-**สถานะปัจจุบัน:** dev-ready, **ก่อน production ต้องทำ Phase A ให้ครบทุกข้อ**
+**สถานะปัจจุบัน:** dev-ready + multi-store boundary, **ก่อน production ต้องทำ Phase A ให้ครบทุกข้อ**
+
+## ระบบความปลอดภัยที่มีอยู่แล้ว (สรุป)
+
+### การยืนยันตัวตนและสิทธิ์
+
+| ชั้น | รายละเอียด |
+|------|------------|
+| **JWT** | Bearer token, อายุตาม `JWT_EXPIRES_IN`, ตรวจ `users.is_active` ทุก request |
+| **Role** | `super_admin`, `admin`, `staff`, `kitchen` — `requireRole()` บน route |
+| **Multi-store** | `X-POS-Store-ID` + `allowed_store_ids` — staff ข้ามร้านไม่ได้ |
+| **Login** | bcrypt cost 12, rate limit 10 ครั้ง / 10 นาที / IP |
+
+### ขอบเขตการควบคุม (Access boundary)
+
+เมื่อ `ADMIN_CONTROL_LAN_ONLY=true` (ค่าเริ่มต้น):
+
+- การ **แก้ไขร้าน / ผู้ใช้ / เมนู / หมวด / สินค้า (admin)** / ตั้งค่าเครื่องพิมพ์ / retry คิวพิมพ์ ต้องมาจาก **LAN หรือ loopback** (IP ส่วนตัว / 127.x)
+- **Staff / kitchen** ยังใช้งานผ่าน tunnel (ngrok) ได้สำหรับรับออเดอร์และครัว
+- **Mobile store admin** (`permissions`: `mobile_admin` หรือ `store_admin`) แก้เมนู/ร้านที่ได้รับอนุญาตจากภายนอกได้ตาม path ที่จำกัดใน `accessBoundary.js`
+
+โค้ดหลัก: `backend/src/lib/accessBoundary.js`, `backend/src/middleware/auth.js`
+
+### ลูกค้า (ไม่ login)
+
+| การป้องกัน | ไฟล์ |
+|------------|------|
+| QR token สุ่ม 16 bytes | `tables.qr_token` |
+| Session สั่งอาหาร + TTL | `publicOrderGuard.js` |
+| ช่วงเวลาเปิดร้าน / วันในสัปดาห์ | per-store ใน `stores` |
+| GPS / private IP (ตั้งได้) | `ordering_require_*` |
+| Rate limit สั่งอาหาร | `publicOrderLimiter` ใน `server.js` |
+
+### เครือข่ายและ HTTP
+
+- `helmet` (HSTS, X-Frame-Options, …)
+- `trust proxy: 1` สำหรับ Caddy / nginx / Docker proxy
+- Production bind `127.0.0.1` (หรือ `0.0.0.0` เฉพาะภายใน Docker network)
+- CORS allowlist จาก `CORS_ORIGINS`
+- Body limit 1 MB, อัปโหลดรูปจำกัด MIME/ขนาด
+
+### Docker (ถ้าใช้ `docker compose`)
+
+- Postgres และ backend **ไม่** map พอร์ตออก host ใน compose มาตรฐาน
+- เข้าระบบผ่าน **Caddy** (พอร์ต 80/443) — ส่ง `X-Forwarded-For` ให้ LAN guard ทำงาน; ตั้ง `CADDY_DOMAIN` สำหรับ TLS อัตโนมัติ
+- รัน container ด้วย user ไม่ใช่ root (`pos` / `posweb`)
+- ดู [`docker/README.md`](docker/README.md)
+
+```bash
+# ตรวจ header หลัง proxy
+curl -I http://localhost:8080/api/health
+```
 
 ## Phase A — ต้องทำก่อน production (Critical)
 

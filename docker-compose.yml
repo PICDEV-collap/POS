@@ -1,0 +1,108 @@
+# POS V2 — Docker Compose (Postgres + API + Web + Nginx)
+#
+# Quick start:
+#   cp docker/.env.example docker/.env   # edit secrets
+#   docker compose up -d --build
+#   docker compose exec backend node scripts/create-admin.js admin "<password≥10>" "Admin"
+#
+# Docs: deploy/docker/README.md
+
+name: pos-v2
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${PGUSER:-pos}
+      POSTGRES_PASSWORD: ${PGPASSWORD:?Set PGPASSWORD in docker/.env}
+      POSTGRES_DB: ${PGDATABASE:-pos_v2}
+    volumes:
+      - pos_pg_data:/var/lib/postgresql/data
+      - ./database/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"']
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    networks: [pos_internal]
+
+  backend:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.backend
+    restart: unless-stopped
+    env_file:
+      - docker/.env
+    environment:
+      PGHOST: postgres
+      PGPORT: 5432
+      PGUSER: ${PGUSER:-pos}
+      PGPASSWORD: ${PGPASSWORD:?Set PGPASSWORD in docker/.env}
+      PGDATABASE: ${PGDATABASE:-pos_v2}
+      NODE_ENV: production
+      LISTEN_HOST: 0.0.0.0
+      TRUST_PROXY: '1'
+    volumes:
+      - pos_uploads:/app/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD-SHELL', 'node -e "fetch(\"http://127.0.0.1:4000/api/health\").then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"']
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    networks: [pos_internal]
+
+  web:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.web
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      BACKEND_INTERNAL_URL: http://backend:4000
+      NEXT_PUBLIC_API_BASE: ''
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD-SHELL', 'node -e "fetch(\"http://127.0.0.1:3000/login\").then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"']
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    networks: [pos_internal]
+
+  proxy:
+    image: caddy:2.8-alpine
+    restart: unless-stopped
+    ports:
+      - '${HTTP_PORT:-8080}:80'
+      - '${HTTPS_PORT:-443}:443'
+    environment:
+      CADDY_DOMAIN: ${CADDY_DOMAIN:-}
+      ACME_EMAIL: ${ACME_EMAIL:-admin@example.com}
+    volumes:
+      - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      web:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+    networks: [pos_internal]
+
+networks:
+  pos_internal:
+    driver: bridge
+
+volumes:
+  pos_pg_data:
+  pos_uploads:
+  caddy_data:
+  caddy_config:

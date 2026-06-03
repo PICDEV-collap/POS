@@ -1,0 +1,22 @@
+# HTTP-only (default Docker). For HTTPS + Let's Encrypt use:
+#   docker compose -f docker-compose.yml -f docker-compose.tls.yml --env-file docker/.env up -d
+
+(common) {
+	encode gzip zstd
+	handle /api/* {
+		reverse_proxy backend:4000
+	}
+	handle /uploads/* {
+		reverse_proxy backend:4000
+	}
+	handle /socket.io/* {
+		reverse_proxy backend:4000
+	}
+	handle {
+		reverse_proxy web:3000
+	}
+}
+
+:80 {
+	import common
+}
