@@ -139,20 +139,27 @@ export default function AdminPage() {
               onChange={changeActiveStore}
             />
           )}
-          <button onClick={handleLogout} style={{ ...navLinkStyle, background: 'rgba(239,71,111,.15)', color: '#ef476f', borderColor: 'rgba(239,71,111,.25)', border: '1px solid', cursor: 'pointer' }}>🚪 ออก</button>
+          <button onClick={handleLogout} style={{ ...navLinkStyle, background: 'rgba(229,71,107,.16)', color: '#ff9eb5', borderColor: 'rgba(229,71,107,.35)', border: '1px solid', cursor: 'pointer' }}>🚪 ออก</button>
         </div>
       </header>
 
-      <nav className="admin-tab-bar" style={{ background: 'white', padding: '8px 12px', display: 'flex', gap: 6,
+      <nav className="admin-tab-bar" style={{ background: 'rgba(255,255,255,.94)',
+                    backdropFilter: 'blur(10px)', WebkitBackdropFilter: 'blur(10px)',
+                    padding: '9px 12px', display: 'flex', gap: 7,
                     overflowX: 'auto', WebkitOverflowScrolling: 'touch',
-                    boxShadow: '0 1px 4px rgba(0,0,0,.08)',
+                    borderBottom: '1px solid #e6e8f2',
+                    boxShadow: '0 4px 16px rgba(24,28,52,.06)',
                     position: 'sticky', top: 56, zIndex: 40 }}>
         {visibleTabs.map((t) => (
           <button key={t.id} onClick={() => setTab(t.id)}
-                  style={{ flex: 'none', padding: '7px 12px', borderRadius: 8, border: 'none',
-                           fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap',
-                           background: activeTab === t.id ? '#1a1a2e' : 'transparent',
-                           color: activeTab === t.id ? 'white' : '#666', cursor: 'pointer' }}>
+                  style={{ flex: 'none', padding: '8px 14px', borderRadius: 999,
+                           border: '1px solid ' + (activeTab === t.id ? '#1c2342' : 'transparent'),
+                           fontSize: 12.5, fontWeight: activeTab === t.id ? 700 : 600,
+                           whiteSpace: 'nowrap',
+                           background: activeTab === t.id ? 'linear-gradient(135deg,#1c2342,#2c3567)' : 'transparent',
+                           color: activeTab === t.id ? 'white' : '#494f6b', cursor: 'pointer',
+                           boxShadow: activeTab === t.id ? '0 6px 16px rgba(28,35,66,.25)' : 'none',
+                           transition: 'background .15s ease, color .15s ease' }}>
             {t.label}
           </button>
         ))}
@@ -182,21 +189,27 @@ export default function AdminPage() {
 }
 
 const navLinkStyle = {
-  background: 'rgba(255,209,102,.15)', color: '#ffd166',
-  border: '1px solid rgba(255,209,102,.25)', padding: '7px 14px',
-  borderRadius: 20, textDecoration: 'none', fontSize: 12, fontWeight: 600,
+  background: 'rgba(245,179,51,.16)', color: '#f5b333',
+  border: '1px solid rgba(245,179,51,.3)', padding: '8px 15px',
+  borderRadius: 999, textDecoration: 'none', fontSize: 12.5, fontWeight: 700,
 };
 
-const card = { background: 'white', borderRadius: 14, padding: 16,
-               boxShadow: '0 2px 10px rgba(0,0,0,.05)', marginBottom: 12 };
-const btnPrimary = { background: '#1a1a2e', color: 'white', border: 'none', borderRadius: 8,
-                     padding: '8px 14px', fontWeight: 600, fontSize: 13, cursor: 'pointer' };
-const btnSecondary = { background: '#f0f0f5', color: '#1a1a2e', border: 'none', borderRadius: 8,
-                       padding: '8px 14px', fontWeight: 600, fontSize: 13, cursor: 'pointer' };
-const btnDanger = { background: 'rgba(239,71,111,.15)', color: '#ef476f', border: 'none',
-                    borderRadius: 8, padding: '8px 14px', fontWeight: 600, fontSize: 13, cursor: 'pointer' };
-const inputStyle = { width: '100%', padding: '8px 12px', borderRadius: 8,
-                     border: '1.5px solid #e5e5ea', fontSize: 14, outline: 'none', boxSizing: 'border-box' };
+const card = { background: 'white', borderRadius: 16, padding: 16,
+               border: '1px solid #e6e8f2',
+               boxShadow: '0 1px 2px rgba(24,28,52,.05), 0 2px 8px rgba(24,28,52,.05)',
+               marginBottom: 12 };
+const btnPrimary = { background: 'linear-gradient(135deg,#1c2342,#2c3567)', color: 'white',
+                     border: 'none', borderRadius: 10,
+                     padding: '9px 16px', fontWeight: 700, fontSize: 13, cursor: 'pointer',
+                     boxShadow: '0 4px 12px rgba(28,35,66,.22)' };
+const btnSecondary = { background: '#eef0f7', color: '#1c2342', border: '1px solid #dfe2ee',
+                       borderRadius: 10,
+                       padding: '9px 16px', fontWeight: 600, fontSize: 13, cursor: 'pointer' };
+const btnDanger = { background: '#fdecf1', color: '#c23054', border: '1px solid rgba(229,71,107,.25)',
+                    borderRadius: 10, padding: '9px 16px', fontWeight: 600, fontSize: 13, cursor: 'pointer' };
+const inputStyle = { width: '100%', padding: '9px 13px', borderRadius: 10,
+                     border: '1.5px solid #dfe2ee', fontSize: 14, outline: 'none',
+                     background: '#f8f9fd', boxSizing: 'border-box' };
 
 // ─────────────────────────────────────────────────────────────────────
 function StoreSwitcher({ currentUser, activeStoreId, onChange }) {
@@ -224,7 +237,7 @@ function StoreSwitcher({ currentUser, activeStoreId, onChange }) {
   }, [stores, activeStoreId, currentUser?.store_id, onChange]);
 
   if (error) {
-    return <span style={{ color: '#ffd166', fontSize: 12 }}>ร้าน: {error}</span>;
+    return <span style={{ color: '#f5b333', fontSize: 12 }}>ร้าน: {error}</span>;
   }
   if (!stores.length) return null;
 
@@ -248,7 +261,7 @@ function StoreSwitcher({ currentUser, activeStoreId, onChange }) {
         }}
       >
         {stores.map((s) => (
-          <option key={s.id} value={s.id} style={{ color: '#1a1a2e' }}>
+          <option key={s.id} value={s.id} style={{ color: '#1c2342' }}>
             #{s.id} {s.name}
           </option>
         ))}
@@ -295,12 +308,16 @@ function DashboardTab() {
 
 function StatCard({ label, value, icon, highlight }) {
   return (
-    <div style={{ ...card, marginBottom: 0,
-                  background: highlight ? 'linear-gradient(135deg,#1a1a2e,#16213e)' : 'white',
-                  color: highlight ? 'white' : '#1a1a2e' }}>
-      <div style={{ fontSize: 11, opacity: .6, letterSpacing: 1 }}>{icon} {label}</div>
-      <div style={{ fontSize: 28, fontWeight: 800, marginTop: 4,
-                    color: highlight ? '#ffd166' : '#1a1a2e' }}>{value}</div>
+    <div style={{ ...card, marginBottom: 0, padding: '18px 18px 16px',
+                  background: highlight
+                    ? 'radial-gradient(300px 140px at 90% -30%, rgba(232,93,4,.4), transparent 65%), linear-gradient(135deg,#181e3a,#2c3567)'
+                    : 'white',
+                  border: highlight ? 'none' : card.border,
+                  boxShadow: highlight ? '0 12px 30px rgba(28,35,66,.3)' : card.boxShadow,
+                  color: highlight ? 'white' : '#1c2342' }}>
+      <div style={{ fontSize: 11.5, opacity: highlight ? .75 : .55, letterSpacing: 1, fontWeight: 600 }}>{icon} {label}</div>
+      <div style={{ fontSize: 30, fontWeight: 800, marginTop: 6,
+                    color: highlight ? '#f5b333' : '#1c2342' }}>{value}</div>
     </div>
   );
 }
@@ -384,13 +401,13 @@ function StoresTab({ currentUser, activeStoreId, onManageStore }) {
           return (
           <div key={s.id} style={{
             ...card,
-            border: isCurrent ? '2px solid #1a1a2e' : '2px solid transparent',
+            border: isCurrent ? '2px solid #1c2342' : '2px solid transparent',
             boxShadow: isCurrent ? '0 4px 16px rgba(26,26,46,.14)' : card.boxShadow,
           }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
               <div>
                 <div style={{ fontSize: 12, color: '#999', fontWeight: 700 }}>{s.code} · #{s.id}</div>
-                <div style={{ fontSize: 18, fontWeight: 800, color: '#1a1a2e', marginTop: 3 }}>{s.logo || '🍽️'} {s.name}</div>
+                <div style={{ fontSize: 18, fontWeight: 800, color: '#1c2342', marginTop: 3 }}>{s.logo || '🍽️'} {s.name}</div>
                 <div style={{ fontSize: 12, color: '#777', marginTop: 4 }}>{s.public_base_url || 'LAN/local only'}</div>
               </div>
               <span style={{
@@ -577,7 +594,7 @@ function UsersTab({ currentUser }) {
             {users.map((u) => (
               <tr key={u.id} style={{ borderTop: '1px solid #eee' }}>
                 <td style={tdStyle}>
-                  <div style={{ fontWeight: 800, color: '#1a1a2e' }}>{u.username}</div>
+                  <div style={{ fontWeight: 800, color: '#1c2342' }}>{u.username}</div>
                   <div style={{ color: '#888', fontSize: 12 }}>{u.full_name || '-'}</div>
                 </td>
                 <td style={tdStyle}>{ROLE_LABELS[u.role] || u.role}</td>
@@ -709,7 +726,7 @@ function UserModal({ initial, stores, currentUser, onClose, onSave }) {
               style={{
                 position: 'absolute', right: 6, top: 6, bottom: 6,
                 minWidth: 40, border: 'none', borderRadius: 6,
-                background: '#f0f0f5', cursor: 'pointer', fontSize: 15,
+                background: '#eef0f7', cursor: 'pointer', fontSize: 15,
               }}
             >
               {showPassword ? '🙈' : '👁'}
@@ -765,7 +782,7 @@ function UserModal({ initial, stores, currentUser, onClose, onSave }) {
                 right: 0,
                 zIndex: 120,
                 background: 'white',
-                border: '1.5px solid #e5e5ea',
+                border: '1.5px solid #dfe2ee',
                 borderRadius: 8,
                 boxShadow: '0 12px 28px rgba(0,0,0,.16)',
                 overflow: 'hidden',
@@ -852,8 +869,8 @@ function OrdersTab() {
       <div style={{ display: 'flex', gap: 6, marginBottom: 12 }}>
         {['active', 'paid', 'all'].map((f) => (
           <button key={f} onClick={() => setFilter(f)}
-                  style={{ ...btnSecondary, background: filter === f ? '#1a1a2e' : '#f0f0f5',
-                           color: filter === f ? 'white' : '#1a1a2e' }}>
+                  style={{ ...btnSecondary, background: filter === f ? '#1c2342' : '#eef0f7',
+                           color: filter === f ? 'white' : '#1c2342' }}>
             {f === 'active' ? 'กำลังดำเนินการ' : f === 'paid' ? 'ชำระแล้ว' : 'ทั้งหมด'}
           </button>
         ))}
@@ -869,7 +886,7 @@ function OrdersTab() {
           </thead>
           <tbody>
             {filtered.map((o) => (
-              <tr key={o.id} style={{ borderTop: '1px solid #f0f0f5' }}>
+              <tr key={o.id} style={{ borderTop: '1px solid #eef0f7' }}>
                 <td style={td}>#{o.id}</td>
                 <td style={td}>{o.table_name}</td>
                 <td style={td}>
@@ -1063,7 +1080,7 @@ function AccountingTab() {
 function ReportTable({ title, rows, columns }) {
   return (
     <div style={{ ...card, padding: 0, overflow: 'hidden' }}>
-      <div style={{ padding: '12px 14px', fontWeight: 800, borderBottom: '1px solid #f0f0f5' }}>
+      <div style={{ padding: '12px 14px', fontWeight: 800, borderBottom: '1px solid #eef0f7' }}>
         {title} ({rows.length})
       </div>
       <div style={{ overflowX: 'auto' }}>
@@ -1073,7 +1090,7 @@ function ReportTable({ title, rows, columns }) {
           </thead>
           <tbody>
             {rows.map((row, idx) => (
-              <tr key={row.id || `${title}-${idx}`} style={{ borderTop: '1px solid #f0f0f5' }}>
+              <tr key={row.id || `${title}-${idx}`} style={{ borderTop: '1px solid #eef0f7' }}>
                 {columns.map(([key, _label, format]) => (
                   <td key={key} style={td}>{format ? format(row[key], row) : (row[key] ?? '—')}</td>
                 ))}
@@ -1102,8 +1119,8 @@ function moneyText(value) {
 }
 
 const STATUS_LABEL = { pending: 'รอ', cooking: 'กำลังทำ', served: 'เสิร์ฟแล้ว', paid: 'ชำระแล้ว', cancelled: 'ยกเลิก' };
-const STATUS_BG = { pending: '#fff0f0', cooking: '#fff8e1', served: '#e8f8f5', paid: '#f0f0f5', cancelled: '#ffe5e5' };
-const STATUS_FG = { pending: '#c0392b', cooking: '#b8860b', served: '#06d6a0', paid: '#666', cancelled: '#c0392b' };
+const STATUS_BG = { pending: '#fdecf1', cooking: '#fdf3dc', served: '#e2f8f0', paid: '#eef0f7', cancelled: '#fdecf1' };
+const STATUS_FG = { pending: '#c23054', cooking: '#9a6700', served: '#077a5d', paid: '#666', cancelled: '#c23054' };
 const th = { padding: '10px 12px', textAlign: 'left', fontWeight: 600 };
 const td = { padding: '10px 12px', fontSize: 13 };
 
@@ -1674,7 +1691,7 @@ function BarcodeTemplatePicker({ product, template, onChange, onDraftChange }) {
               ค่าเริ่มต้น 75×129 · 4 คอลัมน์
             </button>
             <button type="button" onClick={() => commitCustom(customW, customH, customCols, customColGap)}
-                    style={{ width: '100%', padding: 10, borderRadius: 8, border: 'none', background: '#1a1a2e', color: '#fff', cursor: 'pointer', fontWeight: 800 }}>
+                    style={{ width: '100%', padding: 10, borderRadius: 8, border: 'none', background: '#1c2342', color: '#fff', cursor: 'pointer', fontWeight: 800 }}>
               ใช้ค่านี้
             </button>
           </div>
@@ -1685,7 +1702,7 @@ function BarcodeTemplatePicker({ product, template, onChange, onDraftChange }) {
               return (
                 <button key={t.id} type="button" onClick={() => pickPreset(t)}
                         style={{ textAlign: 'center', padding: 8, borderRadius: 10, cursor: 'pointer', minWidth: 0,
-                                 border: `2px solid ${sel ? '#1a1a2e' : '#e8e8ee'}`, background: '#fff' }}>
+                                 border: `2px solid ${sel ? '#1c2342' : '#e8e8ee'}`, background: '#fff' }}>
                   <BarcodeLabelPreview template={t} product={product} />
                   <div style={{ fontSize: 11, fontWeight: 700, marginTop: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.name}</div>
                   <div style={{ fontSize: 10, color: '#888', whiteSpace: 'pre-line', lineHeight: 1.25 }}>{templateSizeLabel(t)}</div>
@@ -1743,7 +1760,7 @@ function BarcodePrintModal({ product, stations, onClose, onBrowserPrint }) {
   return (
     <Modal title={`🖨 พิมพ์ barcode · ${product.name}`} onClose={onClose} maxWidth={560}>
       <div style={{ fontSize: 13, color: '#555', marginBottom: 12 }}>
-        Barcode: <code style={{ background: '#f0f0f5', padding: '2px 6px', borderRadius: 4 }}>{product.barcode}</code>
+        Barcode: <code style={{ background: '#eef0f7', padding: '2px 6px', borderRadius: 4 }}>{product.barcode}</code>
       </div>
       <BarcodeTemplatePicker
         product={product}
@@ -2055,8 +2072,8 @@ function ProductModal({ initial, categories, stations = [], onClose, onSave }) {
   const errors = validationErrors();
   const canSave = errors.length === 0;
   const modalGrid = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 10 };
-  const sectionStyle = { borderTop: '1px solid #f0f0f5', marginTop: 12, paddingTop: 12 };
-  const rowBox = { border: '1px solid #e5e5ea', borderRadius: 8, padding: 8, marginBottom: 8, background: '#fff' };
+  const sectionStyle = { borderTop: '1px solid #eef0f7', marginTop: 12, paddingTop: 12 };
+  const rowBox = { border: '1px solid #dfe2ee', borderRadius: 8, padding: 8, marginBottom: 8, background: '#fff' };
   const tinyBtn = { ...btnSecondary, fontSize: 12, padding: '6px 9px' };
 
   return (
@@ -2084,7 +2101,7 @@ function ProductModal({ initial, categories, stations = [], onClose, onSave }) {
           </select>
         </Field>
       </div>
-      <div style={{ ...sectionStyle, borderTop: '1px solid #f0f0f5' }}>
+      <div style={{ ...sectionStyle, borderTop: '1px solid #eef0f7' }}>
         <strong style={{ display: 'block', fontSize: 14, marginBottom: 8 }}>จุดผลิต / สต๊อก</strong>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 10 }}>
           <Field label="ประเภทสินค้า">
@@ -2364,7 +2381,7 @@ function CategoriesTab() {
       <div style={{ ...card }}>
         {cats.map((c) => (
           <div key={c.id} style={{ display: 'flex', alignItems: 'center', padding: '10px 0',
-                                   borderBottom: '1px solid #f0f0f5', opacity: c.is_active ? 1 : .4 }}>
+                                   borderBottom: '1px solid #eef0f7', opacity: c.is_active ? 1 : .4 }}>
             <div style={{ flex: 1 }}>
               <div style={{ fontWeight: 600 }}>{c.name}</div>
               <div style={{ fontSize: 11, color: '#888' }}>order: {c.sort_order} · {c.is_active ? 'เปิดใช้' : 'ปิด'}</div>
@@ -2480,7 +2497,7 @@ function TablesTab() {
           const isTakeaway = t.is_takeaway || t.code === 'TAKEAWAY' || Number(t.seats) === 0;
           return (
             <div key={t.id} style={{ display: 'flex', alignItems: 'center', padding: '10px 0',
-                                     borderBottom: '1px solid #f0f0f5', opacity: t.is_active ? 1 : .4 }}>
+                                     borderBottom: '1px solid #eef0f7', opacity: t.is_active ? 1 : .4 }}>
               <div style={{ flex: 1 }}>
                 <div style={{ fontWeight: 700 }}>{t.code} · {t.name}</div>
                 <div style={{ fontSize: 11, color: '#888' }}>
@@ -2776,13 +2793,13 @@ function openMultiQrPrintWindow({ storeName, storeLogo, tables, copies = 1, note
     body{padding:24px 16px}
     .toolbar{position:sticky;top:0;background:#fff;padding:10px 14px;border-radius:10px;box-shadow:0 4px 14px rgba(0,0,0,.08);display:flex;gap:8px;justify-content:center;margin-bottom:16px}
     .toolbar button{border:none;border-radius:8px;padding:9px 16px;font-size:13px;font-weight:700;cursor:pointer}
-    .btn-primary{background:#1a1a2e;color:#fff}
-    .btn-secondary{background:#f0f0f5;color:#1a1a2e}
+    .btn-primary{background:#1c2342;color:#fff}
+    .btn-secondary{background:#eef0f7;color:#1c2342}
     .sheet{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;max-width:1100px;margin:0 auto}
     .qr-card{background:#fff;border:2px dashed #999;border-radius:14px;padding:14px 12px;text-align:center;page-break-inside:avoid;break-inside:avoid}
     .store{font-size:12px;font-weight:700;color:#555;margin-bottom:4px}
     .note{font-size:11px;color:#777;margin-bottom:6px}
-    .table-name{font-size:22px;font-weight:800;color:#1a1a2e;line-height:1.1}
+    .table-name{font-size:22px;font-weight:800;color:#1c2342;line-height:1.1}
     .table-code{font-size:11px;color:#888;margin-top:2px}
     .qr{width:100%;max-width:200px;height:auto;display:block;margin:10px auto}
     .url{font-size:10px;color:#666;word-break:break-all;padding:0 4px}
@@ -3285,7 +3302,7 @@ function PrinterTab() {
         )}
         <div style={{ display: 'grid', gap: 10 }}>
           {stations.map((s) => (
-            <div key={s.key} style={{ border: '1px solid #e5e5ea', borderRadius: 10, padding: 10 }}>
+            <div key={s.key} style={{ border: '1px solid #dfe2ee', borderRadius: 10, padding: 10 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center', marginBottom: 8 }}>
                 <div>
                   <strong>{s.name}</strong>
@@ -3412,7 +3429,7 @@ function PrinterTab() {
       </div>
       <button onClick={testPrint} style={{ ...btnPrimary, padding: '12px 18px' }}>🖨️ ทดสอบพิมพ์</button>
       {result && (
-        <pre style={{ background: '#f0f0f5', padding: 10, borderRadius: 8, marginTop: 10, fontSize: 12 }}>
+        <pre style={{ background: '#eef0f7', padding: 10, borderRadius: 8, marginTop: 10, fontSize: 12 }}>
           {JSON.stringify(result, null, 2)}
         </pre>
       )}
@@ -3430,13 +3447,13 @@ const JOB_STATUS_LABEL = {
 const JOB_STATUS_COLOR = {
   pending: { bg: '#fff3cd', fg: '#b8860b' },
   processing: { bg: '#cfe2ff', fg: '#0d6efd' },
-  success: { bg: '#d1f2eb', fg: '#06d6a0' },
-  retrying: { bg: '#fcebd2', fg: '#d35400' },
+  success: { bg: '#d1f2eb', fg: '#0fb98c' },
+  retrying: { bg: '#fcebd2', fg: '#c84f00' },
   failed: { bg: '#f8d7da', fg: '#c0392b' },
   cancelled: { bg: '#e9ecef', fg: '#666' },
   queued: { bg: '#fff3cd', fg: '#b8860b' },
   printing: { bg: '#cfe2ff', fg: '#0d6efd' },
-  printed: { bg: '#d1f2eb', fg: '#06d6a0' },
+  printed: { bg: '#d1f2eb', fg: '#0fb98c' },
 };
 
 function PrintQueueTab({ isAdmin }) {
@@ -3478,8 +3495,8 @@ function PrintQueueTab({ isAdmin }) {
           {['', 'pending', 'processing', 'retrying', 'success', 'failed', 'cancelled'].map((s) => (
             <button key={s || 'all'} onClick={() => setFilter(s)}
                     style={{ ...btnSecondary,
-                             background: filter === s ? '#1a1a2e' : '#f0f0f5',
-                             color: filter === s ? 'white' : '#1a1a2e',
+                             background: filter === s ? '#1c2342' : '#eef0f7',
+                             color: filter === s ? 'white' : '#1c2342',
                              fontSize: 12, padding: '6px 10px' }}>
               {s ? JOB_STATUS_LABEL[s] : 'ทั้งหมด'}
               {s && counts[s] != null && ` (${counts[s]})`}
@@ -3502,7 +3519,7 @@ function PrintQueueTab({ isAdmin }) {
             {jobs.map((j) => {
               const c = JOB_STATUS_COLOR[j.status] || { bg: '#eee', fg: '#333' };
               return (
-                <tr key={j.id} style={{ borderTop: '1px solid #f0f0f5' }}>
+                <tr key={j.id} style={{ borderTop: '1px solid #eef0f7' }}>
                   <td style={td}>#{j.id}</td>
                   <td style={td}>{j.type}</td>
                   <td style={{ ...td, maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -3568,15 +3585,16 @@ function Modal({ title, onClose, children, maxWidth = 840 }) {
                   zIndex: 100, padding: 'clamp(8px, 3vw, 16px)',
                   overflowY: 'auto', WebkitOverflowScrolling: 'touch' }}>
         <div onClick={(e) => e.stopPropagation()}
-             style={{ background: 'white', borderRadius: 14, padding: 'clamp(12px, 3vw, 16px)',
+             style={{ background: 'white', borderRadius: 20, padding: 'clamp(14px, 3vw, 18px)',
                       width: '100%', maxWidth, maxHeight: 'calc(var(--app-height, 100vh) - 24px)',
-                      overflowY: 'auto', marginTop: 'clamp(8px, 4vh, 24px)' }}>
+                      overflowY: 'auto', marginTop: 'clamp(8px, 4vh, 24px)',
+                      boxShadow: '0 24px 60px rgba(13,16,38,.35)' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center',
                       marginBottom: 12, gap: 10, position: 'sticky', top: 0, background: 'white',
-                      paddingBottom: 8, borderBottom: '1px solid #f0f0f5' }}>
-          <h2 style={{ margin: 0, fontSize: 18, overflow: 'hidden',
+                      paddingBottom: 10, borderBottom: '1px solid #e6e8f2', zIndex: 1 }}>
+          <h2 style={{ margin: 0, fontSize: 18, fontWeight: 800, color: '#1c2342', overflow: 'hidden',
                        textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{title}</h2>
-          <button onClick={onClose} style={{ ...btnSecondary, padding: '4px 10px', flex: 'none' }}>✕</button>
+          <button onClick={onClose} style={{ ...btnSecondary, padding: '5px 11px', borderRadius: 999, flex: 'none' }}>✕</button>
         </div>
         {children}
       </div>
@@ -3701,14 +3719,14 @@ function PrintPreviewModal({ orderId, onClose }) {
         <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
           <button onClick={() => setType('receipt')}
                   style={{ ...btnSecondary,
-                           background: type === 'receipt' ? '#1a1a2e' : '#f0f0f5',
-                           color: type === 'receipt' ? 'white' : '#1a1a2e' }}>
+                           background: type === 'receipt' ? '#1c2342' : '#eef0f7',
+                           color: type === 'receipt' ? 'white' : '#1c2342' }}>
             🧾 ใบเสร็จลูกค้า
           </button>
           <button onClick={() => setType('kitchen')}
                   style={{ ...btnSecondary,
-                           background: type === 'kitchen' ? '#1a1a2e' : '#f0f0f5',
-                           color: type === 'kitchen' ? 'white' : '#1a1a2e' }}>
+                           background: type === 'kitchen' ? '#1c2342' : '#eef0f7',
+                           color: type === 'kitchen' ? 'white' : '#1c2342' }}>
             🍳 ใบสั่งครัว
           </button>
         </div>

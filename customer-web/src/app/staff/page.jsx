@@ -381,21 +381,21 @@ export default function StaffPage() {
   const selectedTableOrders = selectedTableId ? (ordersByTable.get(selectedTableId) || []) : [];
 
   return (
-    <main className="pos-app-shell staff-page-shell" style={{ minHeight: 'var(--app-height, 100vh)', background: '#f0f0f5', fontFamily: 'system-ui, sans-serif' }}>
+    <main className="pos-app-shell staff-page-shell" style={{ minHeight: 'var(--app-height, 100vh)', background: 'var(--pos-bg, #f3f4fa)', fontFamily: 'var(--pos-font, system-ui, sans-serif)' }}>
       <header className="pos-topbar staff-topbar" style={{
-        background: 'linear-gradient(135deg,#1a1a2e,#16213e)', color: 'white',
+        background: 'radial-gradient(480px 200px at 95% -50%, rgba(232,93,4,.3), transparent 65%), linear-gradient(135deg,#181e3a,#2c3567)', color: 'white',
         padding: '14px 18px', display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-        position: 'sticky', top: 0, zIndex: 50, boxShadow: '0 2px 12px rgba(0,0,0,.3)'
+        position: 'sticky', top: 0, zIndex: 50, boxShadow: '0 6px 24px rgba(13,16,38,.28)'
       }}>
         <div>
-          <div style={{ fontWeight: 800, fontSize: 18 }}>👤 หน้าพนักงาน</div>
-          <div style={{ opacity: .55, fontSize: 12 }}>{auth.user.full_name}</div>
+          <div style={{ fontWeight: 800, fontSize: 18, letterSpacing: .2 }}>👤 หน้าพนักงาน</div>
+          <div style={{ opacity: .6, fontSize: 12, marginTop: 1 }}>{auth.user.full_name}</div>
         </div>
         <div className="staff-topbar-actions" style={{ display: 'flex', gap: 8 }}>
           <button onClick={handleLogout}
-                  style={{ background: 'rgba(239,71,111,.15)', color: '#ef476f',
-                           border: '1px solid rgba(239,71,111,.25)', padding: '7px 14px',
-                           borderRadius: 20, fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
+                  style={{ background: 'rgba(229,71,107,.16)', color: '#ff9eb5',
+                           border: '1px solid rgba(229,71,107,.35)', padding: '8px 16px',
+                           borderRadius: 999, fontSize: 12.5, fontWeight: 700, cursor: 'pointer' }}>
             🚪 ออก
           </button>
         </div>
@@ -407,28 +407,39 @@ export default function StaffPage() {
 
       <div className="staff-layout" style={{ display: 'grid', gridTemplateColumns: '260px minmax(0, 1fr)', gap: 0, minHeight: 'calc(var(--app-height, 100vh) - 56px)' }}>
         {/* Tables sidebar */}
-        <aside className="staff-table-rail" style={{ background: 'white', borderRight: '1px solid #e5e5ea', padding: 12, overflowY: 'auto' }}>
-          <div style={{ fontSize: 11, letterSpacing: 2, color: '#888', marginBottom: 8, fontWeight: 700 }}>
+        <aside className="staff-table-rail" style={{ background: 'white', borderRight: '1px solid #e6e8f2', padding: 12, overflowY: 'auto' }}>
+          <div style={{ fontSize: 11, letterSpacing: 2, color: '#858ca6', marginBottom: 10, fontWeight: 700 }}>
             🪑 เลือกโต๊ะ
           </div>
           {tables.map((t) => {
             const active = t.id === selectedTableId;
             const tOrders = ordersByTable.get(t.id) || [];
             const sum = tOrders.reduce((s, o) => s + Number(o.total_amount), 0);
+            const busy = tOrders.length > 0;
             return (
               <button
                 className="staff-table-button"
                 key={t.id}
                 onClick={() => setSelectedTableId(t.id)}
                 style={{
-                  width: '100%', textAlign: 'left', padding: '10px 12px', marginBottom: 6,
-                  borderRadius: 10, border: '2px solid ' + (active ? '#1a1a2e' : 'transparent'),
-                  background: active ? '#1a1a2e' : '#f8f8fa', color: active ? 'white' : '#1a1a2e',
-                  cursor: 'pointer', fontSize: 14
+                  width: '100%', textAlign: 'left', padding: '11px 13px', marginBottom: 7,
+                  borderRadius: 13, border: '1.5px solid ' + (active ? '#1c2342' : '#e6e8f2'),
+                  background: active ? 'linear-gradient(135deg,#1c2342,#2c3567)' : 'white',
+                  color: active ? 'white' : '#1c2342',
+                  cursor: 'pointer', fontSize: 14,
+                  boxShadow: active ? '0 8px 20px rgba(28,35,66,.3)' : '0 1px 2px rgba(24,28,52,.04)',
+                  transition: 'box-shadow .15s ease, border-color .15s ease',
                 }}
               >
-                <div style={{ fontWeight: 700 }}>{t.name}</div>
-                <div style={{ fontSize: 11, opacity: .65 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 7, fontWeight: 700 }}>
+                  <span style={{
+                    width: 8, height: 8, borderRadius: 999, flex: 'none',
+                    background: busy ? '#f5b333' : '#0fb98c',
+                    boxShadow: busy ? '0 0 0 3px rgba(245,179,51,.25)' : '0 0 0 3px rgba(15,185,140,.18)',
+                  }} />
+                  {t.name}
+                </div>
+                <div style={{ fontSize: 11.5, opacity: active ? .75 : .6, marginTop: 3, paddingLeft: 15 }}>
                   {tOrders.length ? `${tOrders.length} รอบ · ฿${sum.toFixed(0)}` : 'ว่าง'}
                 </div>
               </button>
@@ -451,7 +462,7 @@ export default function StaffPage() {
                   <span className="staff-qr-token" style={{ fontSize: 12, color: '#888' }}>QR token: {selectedTable.qr_token.slice(0, 8)}…</span>
                   <button onClick={() => setShowQr(true)}
                           title="แสดง QR ให้ลูกค้าสแกน"
-                          style={{ background: '#1a1a2e', color: 'white', border: 'none',
+                          style={{ background: '#1c2342', color: 'white', border: 'none',
                                    borderRadius: 8, padding: '6px 12px', fontSize: 12,
                                    fontWeight: 700, cursor: 'pointer' }}>
                     📱 QR ลูกค้า
@@ -478,14 +489,14 @@ export default function StaffPage() {
                       <div style={{ display: 'flex', gap: 4 }}>
                         <button onClick={() => printOrder(o.id, 'receipt')}
                                 title="พิมพ์ใบเสร็จ"
-                                style={{ background: '#f0f0f5', color: '#1a1a2e', border: 'none',
+                                style={{ background: '#eef0f7', color: '#1c2342', border: 'none',
                                          borderRadius: 8, padding: '5px 10px',
                                          fontSize: 13, cursor: 'pointer' }}>
                           🖨️
                         </button>
                         {o.status !== 'paid' && (
                           <button onClick={() => changeStatus(o.id, 'paid')}
-                                  style={{ background: '#06d6a0', color: 'white', border: 'none',
+                                  style={{ background: '#0fb98c', color: 'white', border: 'none',
                                            borderRadius: 8, padding: '5px 10px',
                                            fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
                             💰 ชำระ
@@ -519,7 +530,7 @@ export default function StaffPage() {
                   />
                   <button onClick={addScannedProduct}
                           disabled={scanBusy || !scanCode.trim()}
-                          style={{ background: '#1a1a2e', color: 'white', border: 'none',
+                          style={{ background: '#1c2342', color: 'white', border: 'none',
                                    borderRadius: 10, padding: '0 16px', fontWeight: 800,
                                    cursor: scanBusy ? 'wait' : 'pointer', opacity: scanCode.trim() ? 1 : .45 }}>
                     เพิ่ม
@@ -528,17 +539,20 @@ export default function StaffPage() {
               </div>
 
               {/* Category tabs */}
-              <div style={{ display: 'flex', gap: 6, overflowX: 'auto', marginBottom: 10 }}>
+              <div style={{ display: 'flex', gap: 8, overflowX: 'auto', marginBottom: 12, paddingBottom: 2 }}>
                 {menu.categories.map((c) => {
                   const active = activeCat === c.id;
                   return (
                     <button key={c.id}
                             onClick={() => setActiveCat(c.id)}
-                            style={{ flex: 'none', padding: '8px 14px', borderRadius: 9,
-                                     border: 'none', fontSize: 13, fontWeight: 600,
-                                     background: active ? '#1a1a2e' : 'white',
-                                     color: active ? 'white' : '#666', cursor: 'pointer',
-                                     whiteSpace: 'nowrap' }}>
+                            style={{ flex: 'none', padding: '9px 16px', borderRadius: 999,
+                                     border: '1px solid ' + (active ? '#1c2342' : '#d4d8e8'),
+                                     fontSize: 13.5, fontWeight: 600,
+                                     background: active ? '#1c2342' : 'white',
+                                     color: active ? 'white' : '#494f6b', cursor: 'pointer',
+                                     whiteSpace: 'nowrap',
+                                     boxShadow: active ? '0 6px 16px rgba(28,35,66,.28)' : 'none',
+                                     transition: 'background .15s ease, color .15s ease' }}>
                       {c.name}
                     </button>
                   );
@@ -554,8 +568,9 @@ export default function StaffPage() {
                   const available = p.is_available !== false;
                   const toggling = togglingProductId === p.id;
                   return (
-                    <div key={p.id} style={{ background: 'white', borderRadius: 12, padding: 12,
-                                              boxShadow: '0 2px 6px rgba(0,0,0,.04)',
+                    <div key={p.id} style={{ background: 'white', borderRadius: 16, padding: 12,
+                                              border: '1px solid #e6e8f2',
+                                              boxShadow: '0 1px 2px rgba(24,28,52,.05), 0 2px 8px rgba(24,28,52,.05)',
                                               opacity: available ? 1 : .55,
                                               position: 'relative' }}>
                       {!available && (
@@ -585,19 +600,24 @@ export default function StaffPage() {
                           cur > 0 ? (
                             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                               <button onClick={() => firstKey && setQty(firstKey, cart[firstKey].quantity - 1)}
-                                      style={{ width: 26, height: 26, borderRadius: '50%',
-                                               border: '1.5px solid #eee', background: 'white',
+                                      style={{ width: 28, height: 28, borderRadius: '50%',
+                                               border: '1.5px solid #d4d8e8', background: 'white',
+                                               color: '#1c2342', fontWeight: 800,
                                                cursor: 'pointer' }}>−</button>
-                              <span style={{ fontWeight: 700, minWidth: 18, textAlign: 'center' }}>{cur}</span>
+                              <span style={{ fontWeight: 800, minWidth: 18, textAlign: 'center', color: '#c84f00' }}>{cur}</span>
                               <button onClick={() => onAddProduct(p)}
-                                      style={{ width: 26, height: 26, borderRadius: '50%',
-                                               border: 'none', background: '#1a1a2e', color: 'white',
+                                      style={{ width: 28, height: 28, borderRadius: '50%',
+                                               border: 'none', background: 'linear-gradient(135deg,#e85d04,#f0750f)',
+                                               color: 'white', fontWeight: 800,
+                                               boxShadow: '0 4px 10px rgba(232,93,4,.3)',
                                                cursor: 'pointer' }}>+</button>
                             </div>
                           ) : (
                             <button onClick={() => onAddProduct(p)}
-                                    style={{ width: 30, height: 30, borderRadius: '50%',
-                                             border: 'none', background: '#1a1a2e', color: 'white',
+                                    style={{ width: 32, height: 32, borderRadius: '50%',
+                                             border: 'none', background: 'linear-gradient(135deg,#e85d04,#f0750f)',
+                                             color: 'white',
+                                             boxShadow: '0 4px 10px rgba(232,93,4,.3)',
                                              fontSize: 18, cursor: 'pointer' }}>+</button>
                           )
                         ) : (
@@ -622,18 +642,20 @@ export default function StaffPage() {
 
               {/* Cart bar */}
               {totalQty > 0 && (
-                <div style={{ position: 'sticky', bottom: 0, background: 'white',
-                              padding: 12, borderRadius: 14, marginTop: 16,
-                              boxShadow: '0 -4px 20px rgba(0,0,0,.12)' }}>
+                <div style={{ position: 'sticky', bottom: 8, background: 'rgba(255,255,255,.97)',
+                              backdropFilter: 'blur(10px)', WebkitBackdropFilter: 'blur(10px)',
+                              padding: 12, borderRadius: 18, marginTop: 16,
+                              border: '1px solid #e6e8f2',
+                              boxShadow: '0 -6px 32px rgba(24,28,52,.16)' }}>
                   <div style={{ maxHeight: 220, overflowY: 'auto', marginBottom: 10 }}>
                     {cartItems.map((c) => (
                       <div key={c.key} style={{
-                        border: '1px solid #f0f0f5', borderRadius: 10, padding: 9,
+                        border: '1px solid #eef0f7', borderRadius: 10, padding: 9,
                         marginBottom: 7, background: '#fbfbfd',
                       }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10 }}>
                           <div style={{ minWidth: 0, flex: 1 }}>
-                            <div style={{ fontWeight: 700, fontSize: 13, color: '#1a1a2e',
+                            <div style={{ fontWeight: 700, fontSize: 13, color: '#1c2342',
                                           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                               {c.product.name}{c.variantName ? ` (${c.variantName})` : ''} × {c.quantity}
                             </div>
@@ -669,9 +691,10 @@ export default function StaffPage() {
                   <button
                     onClick={placeOrder}
                     disabled={submitting}
-                    style={{ width: '100%', background: 'linear-gradient(135deg,#1a1a2e,#203a43)',
-                             color: 'white', border: 'none', borderRadius: 13, padding: 14,
-                             fontWeight: 700, fontSize: 15, cursor: 'pointer',
+                    style={{ width: '100%', background: 'linear-gradient(135deg,#e85d04,#f0750f)',
+                             color: 'white', border: 'none', borderRadius: 14, padding: '15px 16px',
+                             fontWeight: 800, fontSize: 15.5, cursor: 'pointer',
+                             boxShadow: '0 10px 24px rgba(232,93,4,.35)',
                              display: 'flex', justifyContent: 'space-between', opacity: submitting ? .5 : 1 }}
                   >
                     <span>{submitting ? 'กำลังบันทึก…' : '🛒 ยืนยันออเดอร์'} · {totalQty} รายการ</span>
@@ -724,8 +747,11 @@ function StaffScannedPreview({ product, onCancel, onAdd }) {
                   display: 'flex', alignItems: 'flex-end' }}>
       <div onClick={(e) => e.stopPropagation()}
            style={{ background: 'white', width: '100%', maxWidth: 520, margin: '0 auto',
-                    borderRadius: '16px 16px 0 0', padding: 18, maxHeight: '80vh', overflowY: 'auto' }}>
-        <h3 style={{ margin: '0 0 8px', fontSize: 20, fontWeight: 800 }}>
+                    borderRadius: '24px 24px 0 0', padding: '12px 18px 18px',
+                    maxHeight: '80vh', overflowY: 'auto',
+                    boxShadow: '0 -16px 48px rgba(13,16,38,.3)' }}>
+        <div style={{ width: 44, height: 5, borderRadius: 999, background: '#e2e4ee', margin: '0 auto 14px' }} />
+        <h3 style={{ margin: '0 0 8px', fontSize: 20, fontWeight: 800, color: '#1c2342' }}>
           {product.emoji || ''} {product.name}
         </h3>
         {product.description && (
@@ -741,7 +767,7 @@ function StaffScannedPreview({ product, onCancel, onAdd }) {
             {currency}{unitPrice.toFixed(0)}
           </span>
           {product.barcode && (
-            <code style={{ fontSize: 12, background: '#f0f0f5', padding: '4px 8px', borderRadius: 6 }}>
+            <code style={{ fontSize: 12, background: '#eef0f7', padding: '4px 8px', borderRadius: 6 }}>
               {product.barcode}
             </code>
           )}
@@ -768,8 +794,10 @@ function StaffScannedPreview({ product, onCancel, onAdd }) {
         )}
         <button type="button"
                 onClick={() => onAdd(hasOptions ? 1 : qty, '')}
-                style={{ width: '100%', padding: 14, border: 'none', borderRadius: 12,
-                         background: '#1a1a2e', color: 'white', fontWeight: 800, cursor: 'pointer' }}>
+                style={{ width: '100%', padding: 14, border: 'none', borderRadius: 14,
+                         background: 'linear-gradient(135deg,#e85d04,#f0750f)', color: 'white',
+                         fontWeight: 800, cursor: 'pointer',
+                         boxShadow: '0 10px 24px rgba(232,93,4,.35)' }}>
           {hasOptions ? 'เพิ่ม (เลือกตัวเลือก)' : `เพิ่มลงตะกร้า · ${currency}${(unitPrice * qty).toFixed(0)}`}
         </button>
         <button type="button" onClick={onCancel}
@@ -860,8 +888,11 @@ function StaffProductPicker({ product, onCancel, onConfirm }) {
                   zIndex: 100, display: 'flex', alignItems: 'flex-end' }}>
       <div onClick={(e) => e.stopPropagation()}
            style={{ background: 'white', width: '100%', maxWidth: 520, margin: '0 auto',
-                    borderRadius: '16px 16px 0 0', padding: 18, maxHeight: '86vh', overflowY: 'auto' }}>
-        <h3 style={{ margin: '0 0 12px', fontSize: 18 }}>{product.emoji || ''} {product.name}</h3>
+                    borderRadius: '24px 24px 0 0', padding: '12px 18px 18px',
+                    maxHeight: '86vh', overflowY: 'auto',
+                    boxShadow: '0 -16px 48px rgba(13,16,38,.3)' }}>
+        <div style={{ width: 44, height: 5, borderRadius: 999, background: '#e2e4ee', margin: '0 auto 14px' }} />
+        <h3 style={{ margin: '0 0 12px', fontSize: 19, fontWeight: 800, color: '#1c2342' }}>{product.emoji || ''} {product.name}</h3>
         {variantOptions.length > 0 && (
           <div style={{ marginBottom: 12 }}>
             <div style={{ fontSize: 12, color: '#888', marginBottom: 6 }}>ขนาด</div>
@@ -871,9 +902,9 @@ function StaffProductPicker({ product, onCancel, onConfirm }) {
                 <button key={v.id} type="button" onClick={() => setVariantId(v.id)}
                         style={{ width: '100%', display: 'flex', justifyContent: 'space-between',
                                  padding: 11, marginBottom: 6, borderRadius: 10,
-                                 border: `1.5px solid ${active ? '#1a1a2e' : '#eee'}`,
-                                 background: active ? '#1a1a2e' : '#f8f8fa',
-                                 color: active ? 'white' : '#1a1a2e',
+                                 border: `1.5px solid ${active ? '#1c2342' : '#eee'}`,
+                                 background: active ? '#1c2342' : '#f8f8fa',
+                                 color: active ? 'white' : '#1c2342',
                                  fontWeight: 700, cursor: 'pointer' }}>
                   <span>{v.label}</span><span>{currency}{Number(v.price).toFixed(0)}</span>
                 </button>
@@ -895,9 +926,9 @@ function StaffProductPicker({ product, onCancel, onConfirm }) {
                           onClick={() => togglePick(g, item)}
                           style={{ flex: '1 0 calc(50% - 3px)', padding: '10px 12px',
                                    borderRadius: 10,
-                                   border: `1.5px solid ${active ? '#1a1a2e' : '#eee'}`,
-                                   background: active ? '#1a1a2e' : '#f8f8fa',
-                                   color: active ? 'white' : '#1a1a2e',
+                                   border: `1.5px solid ${active ? '#1c2342' : '#eee'}`,
+                                   background: active ? '#1c2342' : '#f8f8fa',
+                                   color: active ? 'white' : '#1c2342',
                                    opacity: atMax ? .45 : 1, fontWeight: 700, cursor: atMax ? 'not-allowed' : 'pointer' }}>
                     {item.name}
                     {Number(item.price_delta) !== 0 && (
@@ -922,8 +953,10 @@ function StaffProductPicker({ product, onCancel, onConfirm }) {
         />
         <button type="button" disabled={!canConfirm}
                 onClick={() => onConfirm(variantName, optionSelections, note.trim())}
-                style={{ width: '100%', padding: 13, border: 'none', borderRadius: 12,
-                         background: canConfirm ? '#1a1a2e' : '#ccc', color: 'white',
+                style={{ width: '100%', padding: 13, border: 'none', borderRadius: 14,
+                         background: canConfirm ? 'linear-gradient(135deg,#e85d04,#f0750f)' : '#ccc',
+                         color: 'white',
+                         boxShadow: canConfirm ? '0 10px 24px rgba(232,93,4,.35)' : 'none',
                          fontWeight: 800, cursor: canConfirm ? 'pointer' : 'not-allowed' }}>
           {canConfirm ? `เพิ่ม · ${currency}${Number(unitPrice).toFixed(0)}` : 'เลือกให้ครบ'}
         </button>
@@ -1009,7 +1042,7 @@ function CustomerQrModal({ table, base, wifiOnly, onClose }) {
         )}
         <div style={{ display: 'flex', gap: 8, justifyContent: 'center', flexWrap: 'wrap', marginTop: 14 }}>
           <button onClick={printThermal} disabled={printing}
-                  style={{ background: '#1a1a2e', color: 'white',
+                  style={{ background: '#1c2342', color: 'white',
                            border: 'none', borderRadius: 10, padding: '10px 18px',
                            fontWeight: 700, cursor: 'pointer', opacity: printing ? .6 : 1 }}>
             🧾 {printing ? 'กำลังส่ง…' : 'พิมพ์ผ่านเครื่องใบเสร็จ'}
@@ -1018,14 +1051,14 @@ function CustomerQrModal({ table, base, wifiOnly, onClose }) {
             url, tableName: table.name, tableCode: table.code,
             note: 'สแกน QR เพื่อสั่งอาหาร',
           })}
-                  style={{ background: '#f0f0f5', color: '#1a1a2e',
+                  style={{ background: '#eef0f7', color: '#1c2342',
                            border: 'none', borderRadius: 10, padding: '10px 18px',
                            fontWeight: 700, cursor: 'pointer' }}
                   title="สำหรับเครื่องพิมพ์ A4">
             🌐 เบราว์เซอร์
           </button>
           <button onClick={onClose}
-                  style={{ background: '#f0f0f5', color: '#1a1a2e',
+                  style={{ background: '#eef0f7', color: '#1c2342',
                            border: 'none', borderRadius: 10, padding: '10px 18px',
                            fontWeight: 700, cursor: 'pointer' }}>
             ปิด
