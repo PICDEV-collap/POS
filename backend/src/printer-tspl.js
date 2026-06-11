@@ -20,6 +20,8 @@
 
 const bitmap = require('./printer-bitmap');
 const { paymentQrMeta } = require('./lib/thaiQrPayment');
+const { isTinyBarcodeLabel } = require('./lib/barcodeLabelScale');
+const { code128ModuleSum } = require('./lib/code128');
 
 function renderToBitmap(builderFn, order, opts) {
   // The existing buildKitchenBitmap/buildReceiptBitmap return ESC/POS bytes,
@@ -165,39 +167,76 @@ function testLines() {
 ///   - `continuous` → `GAP 0,0` + `BLINE 0,0` + `SET TEAR ON` (no sensor check)
 ///   - `gap` (default) → `GAP <n>,0` (gap-detect; <n>mm between die-cut labels)
 ///   - `bline` → `BLINE <n>,0` (black-mark detect)
+function tsplSensorBlock(opts = {}) {
+  const gapMm = opts.gapMm ?? 0;
+  const blineMm = opts.blineMm ?? 0;
+  const paperType = opts.paperType || (gapMm > 0 ? 'gap' : 'continuous');
+  switch (paperType) {
+    case 'continuous':
+      return (
+        `GAP 0,0\r\n` +
+        `BLINE 0,0\r\n` +
+        `SET GAP OFF\r\n` +
+        `SET CUTTER OFF\r\n` +
+        `SET PEEL OFF\r\n` +
+        `SET TEAR ON\r\n`
+      );
+    case 'bline':
+      return `BLINE ${blineMm || 3} mm, 0 mm\r\n`;
+    case 'gap':
+    default:
+      return `GAP ${gapMm || 2} mm, 0 mm\r\n`;
+  }
+}
+
+/// Native TSPL BARCODE — ASCII-only, fits tiny die-cut labels (e.g. 20×10 mm)
+/// without BITMAP raster (avoids BLE corruption on AiYin/A70).
+function buildBarcodeNativeTSPL(opts = {}, cfg = {}) {
+  const labelW = cfg.labelWidthMm || 20;
+  const labelH = cfg.labelHeightMm || 10;
+  const density = cfg.density ?? 8;
+  const speed = cfg.speed ?? 6;
+  const copies = Math.max(1, Number(cfg.copies) || 1);
+  const barcode = String(opts.barcode || '').trim().replace(/"/g, "'");
+  if (!barcode) throw new Error('barcode required');
+
+  const dotsW = labelW * 8;
+  const dotsH = labelH * 8;
+  const moduleSum = code128ModuleSum(barcode);
+  let narrow = dotsW >= 200 ? 2 : 1;
+  if (moduleSum * narrow > dotsW - 4) narrow = 1;
+  const wide = narrow * 2;
+  const estDots = moduleSum * narrow;
+  const barH = Math.max(
+    14,
+    Math.min(dotsH - 4, Math.round(dotsH * (dotsH <= 88 ? 0.68 : 0.55))),
+  );
+  const x = Math.max(2, Math.floor((dotsW - estDots) / 2));
+  const y = Math.max(2, Math.floor((dotsH - barH) / 2));
+
+  const cmd =
+    `SIZE ${labelW} mm, ${labelH} mm\r\n` +
+    tsplSensorBlock(cfg) +
+    `DIRECTION 0\r\n` +
+    `REFERENCE 0,0\r\n` +
+    `DENSITY ${density}\r\n` +
+    `SPEED ${speed}\r\n` +
+    `CLS\r\n` +
+    `BARCODE ${x},${y},"128",${barH},0,0,${narrow},${wide},"${barcode}"\r\n` +
+    `PRINT 1,${copies}\r\n`;
+  return Buffer.from(cmd, 'ascii');
+}
+
 function wrapTSPL(rawBmp, opts = {}) {
   const labelW = opts.labelWidthMm  || 80;
   // Auto-calculate label height from bitmap (203 dpi → 8 dots/mm)
   const labelH = opts.labelHeightMm || Math.ceil(rawBmp.height / 8) + 5;
   const density = opts.density ?? 8;
   const speed   = opts.speed   ?? 4;
-  const gapMm   = opts.gapMm   ?? 0;
-  const blineMm = opts.blineMm ?? 0;
-  const paperType = opts.paperType || (gapMm > 0 ? 'gap' : 'continuous');
-
-  let sensorBlock;
-  switch (paperType) {
-    case 'continuous':
-      // No gap, no black mark — printer keeps feeding until PRINT length is met.
-      sensorBlock =
-        `SET TEAR ON\r\n` +
-        `GAP 0 mm, 0 mm\r\n` +
-        `BLINE 0 mm, 0 mm\r\n`;
-      break;
-    case 'bline':
-      sensorBlock =
-        `BLINE ${blineMm || 3} mm, 0 mm\r\n`;
-      break;
-    case 'gap':
-    default:
-      sensorBlock =
-        `GAP ${gapMm || 2} mm, 0 mm\r\n`;
-      break;
-  }
 
   const head = Buffer.from(
     `SIZE ${labelW} mm, ${labelH} mm\r\n` +
-    sensorBlock +
+    tsplSensorBlock(opts) +
     `DIRECTION 0\r\n` +
     `REFERENCE 0,0\r\n` +
     `DENSITY ${density}\r\n` +
@@ -206,7 +245,8 @@ function wrapTSPL(rawBmp, opts = {}) {
     `BITMAP 0, 0, ${rawBmp.widthBytes}, ${rawBmp.height}, 0, `,
     'ascii'
   );
-  const foot = Buffer.from(`\r\nPRINT 1, 1\r\n`, 'ascii');
+  const copies = Math.max(1, Number(opts.copies) || 1);
+  const foot = Buffer.from(`\r\nPRINT 1, ${copies}\r\n`, 'ascii');
   return Buffer.concat([head, rawBmp.data, foot]);
 }
 
@@ -221,7 +261,24 @@ function buildCalibrateTSPL(opts = {}) {
   let cmd = '';
   if (paperType === 'gap') cmd = `SIZE ${opts.labelWidthMm || 60} mm, ${opts.labelHeightMm || 40} mm\r\nGAPDETECT\r\n`;
   else if (paperType === 'bline') cmd = `SIZE ${opts.labelWidthMm || 60} mm, ${opts.labelHeightMm || 40} mm\r\nBLINEDETECT\r\n`;
-  else cmd = `\r\n`; // continuous: nothing to calibrate
+  else cmd = `\r\n`; // continuous: use buildContinuousSetupTSPL instead
+  return Buffer.from(cmd, 'ascii');
+}
+
+/// One-shot continuous-paper setup. Clears gap/black-mark sensor alarm on
+/// AiYin/IPRT when the roll has no gaps — must match Expert Label "Continuous".
+function buildContinuousSetupTSPL(opts = {}) {
+  const labelW = opts.labelWidthMm || 58;
+  const cmd =
+    `SIZE ${labelW} mm, 10 mm\r\n` +
+    `GAP 0,0\r\n` +
+    `BLINE 0,0\r\n` +
+    `SET GAP OFF\r\n` +
+    `SET CUTTER OFF\r\n` +
+    `SET PEEL OFF\r\n` +
+    `SET TEAR ON\r\n` +
+    `DIRECTION 0\r\n` +
+    `REFERENCE 0,0\r\n`;
   return Buffer.from(cmd, 'ascii');
 }
 
@@ -244,6 +301,26 @@ function buildReceiptTSPL(order, opts = {}) {
   return wrapTSPL(raw, opts);
 }
 
+function buildBarcodeTSPL(opts = {}, cfg = {}) {
+  const cellCfg = bitmap.resolveBarcodeCellCfg(cfg);
+  const w = cellCfg.labelWidthMm || cfg.labelWidthMm || 50;
+  const h = Number(cellCfg.labelHeightMm || cfg.labelHeightMm) || 0;
+  if (isTinyBarcodeLabel(w, h)) {
+    return buildBarcodeNativeTSPL(opts, { ...cellCfg, ...cfg, labelWidthMm: w, labelHeightMm: h || 10 });
+  }
+  bitmap.ensureFont(cfg.fontPath);
+  const { raw, cellCfg: resolved, heightPx } = bitmap.buildBarcodeLabelRaw(opts, cfg);
+  const labelHmm = Number(resolved.labelHeightMm) || 0;
+  const minHmm = Math.max(1, Math.ceil((heightPx + 4) / 8));
+  const labelH = labelHmm > 0 ? Math.max(labelHmm, minHmm) : minHmm;
+  return wrapTSPL(raw, {
+    ...resolved,
+    ...cfg,
+    labelWidthMm: resolved.labelWidthMm || cfg.labelWidthMm || 50,
+    labelHeightMm: labelH,
+  });
+}
+
 function buildTestTSPL(opts = {}) {
   bitmap.ensureFont(opts.fontPath);
   const widthPx = opts.widthPx || 384;
@@ -253,10 +330,33 @@ function buildTestTSPL(opts = {}) {
   return wrapTSPL(raw, opts);
 }
 
+function buildQrTSPL(opts = {}, cfg = {}) {
+  bitmap.ensureFont(cfg.fontPath);
+  const widthPx = cfg.widthPx || 384;
+  const lines = [];
+  const header = [opts.storeLogo, opts.storeName].filter(Boolean).join(' ').trim();
+  if (header) {
+    lines.push({ text: header, size: 28, bold: true, align: 'center', wrap: true, maxWidth: widthPx - 12 });
+  }
+  if (opts.note) lines.push({ text: opts.note, size: 18, align: 'center' });
+  lines.push({ rule: '-', size: 18 });
+  if (opts.tableName) lines.push({ text: opts.tableName, size: 34, bold: true, align: 'center' });
+  if (opts.tableCode) lines.push({ text: opts.tableCode, size: 18, align: 'center' });
+  lines.push({ qr: String(opts.url || ''), sizePx: Math.min(280, widthPx - 48) });
+  if (opts.footer) lines.push({ text: opts.footer, size: 18, align: 'center' });
+  const img = bitmap.renderLines(lines, widthPx, { padTop: 8, padBottom: 16 });
+  const raw = bitmap.rawBitmapFromImageData(img);
+  return wrapTSPL(raw, cfg);
+}
+
 module.exports = {
   buildKitchenTSPL,
   buildReceiptTSPL,
+  buildBarcodeTSPL,
+  buildBarcodeNativeTSPL,
   buildTestTSPL,
+  buildQrTSPL,
   buildCalibrateTSPL,
+  buildContinuousSetupTSPL,
   wrapTSPL,
 };

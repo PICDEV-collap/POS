@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useLayoutEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   getAuth,
@@ -1205,8 +1205,9 @@ function ProductsTab() {
     finally { setBarcodeBusy(null); }
   }
   const [printingBarcode, setPrintingBarcode] = useState(null); // product object
-  async function printBarcodeBrowser(p) {
+  async function printBarcodeBrowser(p, paper = BARCODE_LABEL_TEMPLATES[4]) {
     setError(null);
+    const pageH = paper.height > 0 ? paper.height : 30;
     const w = window.open('', '_blank', 'width=420,height=320');
     if (!w) {
       setError('browser blocked popup');
@@ -1217,7 +1218,12 @@ function ProductsTab() {
     w.document.close();
     try {
       const auth = getAuth();
-      const res = await fetch(`${apiBase}/api/products/${p.id}/barcode/label.svg`, {
+      const qs = new URLSearchParams({
+        label_width_mm: String(barcodeCellWidthMm(paper)),
+        label_height_mm: String(paper.height > 0 ? paper.height : 0),
+        sheet_width_mm: String(paper.width),
+      });
+      const res = await fetch(`${apiBase}/api/products/${p.id}/barcode/label.svg?${qs}`, {
         cache: 'no-store',
         credentials: apiBase ? 'omit' : 'same-origin',
         headers: { Authorization: `Bearer ${auth.token}`, ...activeStoreHeaders(auth) },
@@ -1228,12 +1234,13 @@ function ProductsTab() {
         throw new Error(msg);
       }
       const svg = await res.text();
+      const svgW = Math.max(20, paper.width - 2);
       w.document.open();
       w.document.write(`<!doctype html><html><head><title>Barcode ${p.barcode}</title>
         <style>
-          @page { size: 50mm 30mm; margin: 2mm; }
+          @page { size: ${paper.width}mm ${pageH}mm; margin: 2mm; }
           body { margin: 0; min-height: 100vh; display: grid; place-items: center; font-family: Arial, sans-serif; }
-          svg { width: 48mm; height: auto; }
+          svg { width: ${svgW}mm; height: auto; }
           @media print { body { min-height: auto; } }
         </style></head><body>${svg}<script>setTimeout(function(){window.print()},250)</script></body></html>`);
       w.document.close();
@@ -1335,8 +1342,358 @@ function ProductsTab() {
           product={printingBarcode}
           stations={stations}
           onClose={() => setPrintingBarcode(null)}
-          onBrowserPrint={() => { printBarcodeBrowser(printingBarcode); setPrintingBarcode(null); }}
+          onBrowserPrint={(paper) => { printBarcodeBrowser(printingBarcode, paper); setPrintingBarcode(null); }}
         />
+      )}
+    </div>
+  );
+}
+
+const BARCODE_LABEL_TEMPLATES = [
+  { id: 'roll-58', name: 'ม้วน 58mm', width: 58, height: 0, gap: 0, paper: 'continuous', layout: 'roll', columns: 1, columnGap: 0 },
+  { id: 'roll-80', name: 'ม้วน 80mm', width: 80, height: 0, gap: 0, paper: 'continuous', layout: 'roll', columns: 1, columnGap: 0 },
+  { id: 'price-50x25', name: 'ป้ายราคา', width: 50, height: 25, gap: 2, paper: 'gap', layout: 'price', columns: 1, columnGap: 0 },
+  { id: 'price-50x30', name: 'ป้ายราคา', width: 50, height: 30, gap: 2, paper: 'gap', layout: 'price', columns: 1, columnGap: 0 },
+  { id: 'price-60x30', name: 'ป้ายราคา', width: 60, height: 30, gap: 2, paper: 'gap', layout: 'price', columns: 1, columnGap: 0 },
+  { id: 'price-60x34', name: 'ป้ายราคา', width: 60, height: 34, gap: 2, paper: 'gap', layout: 'price', columns: 1, columnGap: 0 },
+  { id: 'price-60x40', name: 'ป้ายราคา', width: 60, height: 40, gap: 2, paper: 'gap', layout: 'price', columns: 1, columnGap: 0 },
+  { id: 'promo-60x40', name: 'ราคาโปรโมชั่น', width: 60, height: 40, gap: 2, paper: 'gap', layout: 'promo', columns: 1, columnGap: 0 },
+  { id: 'sheet-75x129-4col', name: 'ฉลาก 4 คอลัมน์', width: 75, height: 129, gap: 2, paper: 'gap', layout: 'price', columns: 4, columnGap: 1 },
+];
+
+const BARCODE_CUSTOM_DEFAULT = { width: 75, height: 129, columns: 4, columnGap: 1 };
+
+function barcodeCellWidthMm(t) {
+  const cols = t.columns || 1;
+  if (cols <= 1) return t.width;
+  return Math.max(12, Math.floor((t.width - (cols - 1) * (t.columnGap || 0)) / cols));
+}
+
+/** Text/bar scale from cell size (mm); reference 50×32 mm. */
+function barcodeLabelTextScale(cellWidthMm, cellHeightMm = 0) {
+  const w = Math.max(12, cellWidthMm || 50);
+  const h = cellHeightMm > 0 ? Math.max(12, cellHeightMm) : Math.max(20, w * 0.65);
+  const raw = Math.min(w / 50, h / 32);
+  return Math.min(1.35, Math.max(0.22, raw));
+}
+
+function barcodeHeightForWidthMm(widthMm) {
+  return Math.max(36, Math.min(140, Math.round(80 * (widthMm / 58))));
+}
+
+function templateCellSizeLabel(t) {
+  const cw = barcodeCellWidthMm(t);
+  const ch = t.height > 0 ? t.height : 0;
+  if (ch <= 0) return `${cw} mm ต่อเนื่อง`;
+  if ((t.columns || 1) <= 1) return `${cw}×${ch} mm`;
+  return `${cw}×${ch} mm/ดวง`;
+}
+
+function templateSheetSizeLabel(t) {
+  if (t.height <= 0) return `กระดาษ ${t.width} mm`;
+  if ((t.columns || 1) <= 1) return `กระดาษ ${t.width}×${t.height} mm`;
+  return `กระดาษ ${t.width}×${t.height} mm · ${t.columns} คอลัมน์ · gap ${t.columnGap || 0} mm`;
+}
+
+function templateSizeLabel(t) {
+  if ((t.columns || 1) <= 1) {
+    return t.height > 0 ? `${t.width}×${t.height} mm` : `${t.width} mm ต่อเนื่อง`;
+  }
+  return `${templateSheetSizeLabel(t)}\n${templateCellSizeLabel(t)} (คำนวณอัตโนมัติ)`;
+}
+
+const BARCODE_TEMPLATE_STORAGE_KEY = 'pos_barcode_template_id';
+const BARCODE_CUSTOM_LAYOUT_KEY = 'pos_barcode_custom_layout_v1';
+
+function loadBarcodeTemplate() {
+  try {
+    const id = storageGet(BARCODE_TEMPLATE_STORAGE_KEY);
+    if (id === 'custom') {
+      const raw = storageGet(BARCODE_CUSTOM_LAYOUT_KEY);
+      if (raw) {
+        const j = JSON.parse(raw);
+        return {
+          id: 'custom', name: 'กำหนดเอง', layout: 'price', paper: 'gap', gap: 2,
+          width: j.width ?? 75, height: j.height ?? 129,
+          columns: j.columns ?? 4, columnGap: j.columnGap ?? 1,
+        };
+      }
+    }
+    if (id) {
+      const found = BARCODE_LABEL_TEMPLATES.find((t) => t.id === id);
+      if (found) return found;
+    }
+  } catch { /* ignore */ }
+  return BARCODE_LABEL_TEMPLATES.find((t) => t.id === 'sheet-75x129-4col') || BARCODE_LABEL_TEMPLATES[4];
+}
+
+function saveBarcodeTemplate(t) {
+  storageSet(BARCODE_TEMPLATE_STORAGE_KEY, t.id);
+  if (t.id === 'custom') {
+    storageSet(BARCODE_CUSTOM_LAYOUT_KEY, JSON.stringify({
+      width: t.width, height: t.height, columns: t.columns, columnGap: t.columnGap,
+    }));
+  }
+}
+
+function NumStepper({ label, value, min, max, onChange, disabled }) {
+  function commit(raw) {
+    const n = parseInt(String(raw).trim(), 10);
+    if (Number.isNaN(n)) return;
+    onChange(Math.min(max, Math.max(min, n)));
+  }
+  return (
+    <div style={{ marginBottom: 10 }}>
+      <div style={{ fontSize: 12, fontWeight: 600, lineHeight: 1.35, marginBottom: 6, wordBreak: 'break-word' }}>{label}</div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        <button type="button" disabled={disabled || value <= min} onClick={() => onChange(value - 1)}
+                style={{ width: 36, height: 36, flexShrink: 0, borderRadius: 8, border: '1px solid #ddd', background: '#fff', cursor: 'pointer', fontSize: 18 }}>−</button>
+        <input
+          type="number"
+          min={min}
+          max={max}
+          disabled={disabled}
+          value={value}
+          onChange={(e) => commit(e.target.value)}
+          onBlur={(e) => commit(e.target.value)}
+          style={{
+            flex: 1, minWidth: 0, height: 36, textAlign: 'center', fontWeight: 800, fontSize: 16,
+            borderRadius: 8, border: '1px solid #ccc', padding: '0 8px',
+          }}
+        />
+        <button type="button" disabled={disabled || value >= max} onClick={() => onChange(value + 1)}
+                style={{ width: 36, height: 36, flexShrink: 0, borderRadius: 8, border: '1px solid #ddd', background: '#fff', cursor: 'pointer', fontSize: 18 }}>+</button>
+      </div>
+    </div>
+  );
+}
+
+function BarcodeAutoText({ children, baseSize, large, scale, weight = 700, color }) {
+  const wrapRef = useRef(null);
+  const spanRef = useRef(null);
+  const maxFs = Math.max(4, Math.round(baseSize * scale * (large ? 1.08 : 1)));
+  const [fs, setFs] = useState(maxFs);
+  useLayoutEffect(() => {
+    const wrap = wrapRef.current;
+    const span = spanRef.current;
+    if (!wrap || !span) return;
+    let size = maxFs;
+    span.style.fontSize = `${size}px`;
+    while (size > 3 && span.scrollWidth > wrap.clientWidth - 1) {
+      size -= 0.5;
+      span.style.fontSize = `${size}px`;
+    }
+    setFs(size);
+  }, [children, maxFs, large]);
+  return (
+    <div ref={wrapRef} style={{ width: '100%', minWidth: 0, flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
+      <span ref={spanRef} style={{
+        fontSize: fs, fontWeight: weight, color, lineHeight: 1.05,
+        textAlign: 'center', whiteSpace: 'nowrap',
+      }}>{children}</span>
+    </div>
+  );
+}
+
+function BarcodeLabelCell({ product, large, cellWidthMm, cellHeightMm }) {
+  const name = product?.name || 'ชื่อสินค้า';
+  const code = product?.barcode || '1234567890';
+  const price = product?.price != null ? `฿${Number(product.price).toFixed(0)}` : '฿99';
+  const scale = barcodeLabelTextScale(cellWidthMm, cellHeightMm);
+  const barW = Math.max(1, (large ? 2.5 : 1.5) * scale);
+  const barH = Math.max(6, Math.round((large ? 16 : 10) * scale * (large ? 1.08 : 1)));
+  const barCount = Math.min(large ? 20 : 14, Math.max(large ? 8 : 6, Math.floor(48 / barW)));
+  const bars = Array.from({ length: barCount }, (_, i) => (
+    <span key={i} style={{
+      display: 'inline-block', width: barW, height: barH,
+      margin: '0 0.3px', background: i % 2 === 0 ? '#000' : 'transparent',
+    }} />
+  ));
+  return (
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, minHeight: 0, background: '#fff', borderRadius: 3, padding: large ? 3 : 2 }}>
+      <div style={{ flex: 2, minHeight: 0, display: 'flex' }}>
+        <BarcodeAutoText large={large} scale={scale} baseSize={11} weight={800}>{name}</BarcodeAutoText>
+      </div>
+      <div style={{ flex: 4, display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: 0 }}>{bars}</div>
+      <div style={{ flex: 2, minHeight: 0, display: 'flex' }}>
+        <BarcodeAutoText large={large} scale={scale} baseSize={11} weight={800}>{price}</BarcodeAutoText>
+      </div>
+      <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
+        <BarcodeAutoText large={large} scale={scale} baseSize={8} weight={600} color="#666">{code}</BarcodeAutoText>
+      </div>
+    </div>
+  );
+}
+
+function BarcodeLabelPreview({ template, product, large = false }) {
+  const cols = template.columns || 1;
+  const gap = template.columnGap || 0;
+  const cellWmm = barcodeCellWidthMm(template);
+  const cellHmm = template.height > 0 ? template.height : 0;
+  const maxW = large ? 200 : 80;
+  const ar = template.height > 0 ? template.width / template.height : 0.55;
+  const h = Math.min(large ? 280 : 100, Math.max(44, maxW / ar));
+  if (cols > 1) {
+    const scale = maxW / template.width;
+    const gapPx = gap * scale;
+    const pad = large ? 12 : 8;
+    const innerW = maxW - pad;
+    const cellW = (innerW - (cols - 1) * gapPx) / cols;
+    return (
+      <div style={{
+        width: maxW, height: h, margin: '0 auto', display: 'flex', gap: gapPx,
+        padding: large ? 6 : 4, background: '#e8f0ff', border: '2px solid #8ab4ff', borderRadius: 8,
+        boxSizing: 'border-box',
+      }}>
+        {Array.from({ length: cols }, (_, i) => (
+          <div key={i} style={{
+            width: cellW, display: 'flex', minWidth: 0, minHeight: 0,
+            background: '#fff', borderRadius: 3, border: '1px solid #d0d8f0', overflow: 'hidden',
+          }}>
+            <BarcodeLabelCell product={product} large={large} cellWidthMm={cellWmm} cellHeightMm={cellHmm} />
+          </div>
+        ))}
+      </div>
+    );
+  }
+  return (
+    <div style={{
+      width: maxW, height: h, margin: '0 auto', display: 'flex', flexDirection: 'column',
+      background: '#fff', border: `2px solid ${large ? '#8ab4ff' : '#d0d8f0'}`, borderRadius: 6, padding: large ? 6 : 4,
+    }}>
+      <BarcodeLabelCell product={product} large={large} cellWidthMm={cellWmm} cellHeightMm={cellHmm} />
+    </div>
+  );
+}
+
+function BarcodeTemplatePicker({ product, template, onChange, onDraftChange }) {
+  const [showGrid, setShowGrid] = useState(false);
+  const [custom, setCustom] = useState(template.id === 'custom');
+  const [customW, setCustomW] = useState(template.width);
+  const [customH, setCustomH] = useState(template.height);
+  const [customCols, setCustomCols] = useState(template.columns || 1);
+  const [customColGap, setCustomColGap] = useState(template.columnGap || 0);
+
+  function buildDraft(w = customW, h = customH, cols = customCols, colGap = customColGap) {
+    return {
+      id: 'custom', name: 'กำหนดเอง', layout: 'price', paper: h > 0 ? 'gap' : 'continuous', gap: h > 0 ? 2 : 0,
+      width: w, height: h, columns: cols, columnGap: colGap,
+    };
+  }
+
+  function syncFrom(t) {
+    setCustomW(t.width);
+    setCustomH(t.height);
+    setCustomCols(t.columns || 1);
+    setCustomColGap(t.columnGap || 0);
+    setCustom(t.id === 'custom');
+  }
+
+  function pickPreset(t) {
+    saveBarcodeTemplate(t);
+    onChange(t);
+    onDraftChange?.(t);
+    setShowGrid(false);
+    syncFrom(t);
+  }
+
+  function commitCustom(w, h, cols, colGap) {
+    const t = buildDraft(w, h, cols, colGap);
+    saveBarcodeTemplate(t);
+    onChange(t);
+    onDraftChange?.(t);
+    setCustom(true);
+    setShowGrid(false);
+  }
+
+  function editDraft(partial) {
+    const w = partial.width ?? customW;
+    const h = partial.height ?? customH;
+    const cols = partial.columns ?? customCols;
+    const colGap = partial.columnGap ?? customColGap;
+    if (partial.width != null) setCustomW(w);
+    if (partial.height != null) setCustomH(h);
+    if (partial.columns != null) setCustomCols(cols);
+    if (partial.columnGap != null) setCustomColGap(colGap);
+    setCustom(true);
+    onDraftChange?.(buildDraft(w, h, cols, colGap));
+  }
+
+  const preview = showGrid || custom ? buildDraft() : template;
+
+  return (
+    <div>
+      <div style={{ background: '#f4f7ff', border: '1px solid #bbd4ff', borderRadius: 12, padding: 14, textAlign: 'center' }}>
+        <BarcodeLabelPreview template={preview} product={product} large />
+        <div style={{ fontWeight: 800, fontSize: 15, marginTop: 8, whiteSpace: 'pre-line', lineHeight: 1.35, wordBreak: 'break-word' }}>
+          {templateSizeLabel(preview)}
+        </div>
+        <div style={{ fontSize: 12, color: '#666', lineHeight: 1.35, wordBreak: 'break-word', whiteSpace: 'pre-line' }}>
+          {(preview.columns || 1) > 1
+            ? `${templateSheetSizeLabel(preview)}\n${templateCellSizeLabel(preview)} · ${preview.name}`
+            : `${templateCellSizeLabel(preview)} · ${preview.name}`}
+        </div>
+        <button type="button" onClick={() => {
+          setShowGrid((v) => {
+            const next = !v;
+            if (next) syncFrom(template);
+            return next;
+          });
+        }}
+                style={{ marginTop: 8, border: 'none', background: 'transparent', color: '#1a5cff', fontWeight: 700, cursor: 'pointer' }}>
+          {showGrid ? 'ซ่อนการตั้งค่า ▲' : 'เปลี่ยนขนาด / แม่แบบ >'}
+        </button>
+      </div>
+      {showGrid && (
+        <>
+          <div style={{ marginTop: 12, padding: 12, background: '#fafafc', borderRadius: 10, border: '1px solid #e8e8ee' }}>
+            <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 4 }}>ฉลากกำหนดเอง</div>
+            <div style={{ fontSize: 11, color: '#666', marginBottom: 8, lineHeight: 1.35 }}>
+              ตั้งกระดาษ + คอลัมน์ — ระบบคำนวณขนาดฉลากต่อดวงและตัวอักษรใน preview ให้
+            </div>
+            <div style={{
+              marginBottom: 12, padding: '10px 12px', background: '#e8f0ff', borderRadius: 8,
+              border: '1px solid #bbd4ff', textAlign: 'center',
+            }}>
+              <div style={{ fontSize: 11, color: '#555' }}>ขนาดฉลากต่อดวง (คำนวณอัตโนมัติ)</div>
+              <div style={{ fontWeight: 800, fontSize: 18, marginTop: 4 }}>{templateCellSizeLabel(preview)}</div>
+              {(preview.columns || 1) > 1 && (
+                <div style={{ fontSize: 10, color: '#666', marginTop: 4 }}>{templateSheetSizeLabel(preview)}</div>
+              )}
+            </div>
+            <NumStepper label="ความกว้างกระดาษ (mm)" value={customW} min={20} max={120}
+                       onChange={(v) => editDraft({ width: v })} />
+            <NumStepper label="ความสูงกระดาษ (mm)" value={customH} min={0} max={200}
+                       onChange={(v) => editDraft({ height: v })} />
+            <NumStepper label="คอลัมน์" value={customCols} min={1} max={6}
+                       onChange={(v) => editDraft({ columns: v })} />
+            <NumStepper label="ระยะห่างคอลัมน์ (mm)" value={customColGap} min={0} max={10}
+                       onChange={(v) => editDraft({ columnGap: v })} />
+            <button type="button" onClick={() => editDraft({ ...BARCODE_CUSTOM_DEFAULT })}
+                    style={{ width: '100%', marginBottom: 8, padding: 8, borderRadius: 8, border: '1px solid #ddd', background: '#fff', cursor: 'pointer', fontWeight: 700, fontSize: 12 }}>
+              ค่าเริ่มต้น 75×129 · 4 คอลัมน์
+            </button>
+            <button type="button" onClick={() => commitCustom(customW, customH, customCols, customColGap)}
+                    style={{ width: '100%', padding: 10, borderRadius: 8, border: 'none', background: '#1a1a2e', color: '#fff', cursor: 'pointer', fontWeight: 800 }}>
+              ใช้ค่านี้
+            </button>
+          </div>
+          <div style={{ fontSize: 12, fontWeight: 700, margin: '14px 0 8px' }}>แม่แบบสำเร็จรูป</div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 8, maxHeight: 280, overflowY: 'auto' }}>
+            {BARCODE_LABEL_TEMPLATES.map((t) => {
+              const sel = t.id === template.id && !custom;
+              return (
+                <button key={t.id} type="button" onClick={() => pickPreset(t)}
+                        style={{ textAlign: 'center', padding: 8, borderRadius: 10, cursor: 'pointer', minWidth: 0,
+                                 border: `2px solid ${sel ? '#1a1a2e' : '#e8e8ee'}`, background: '#fff' }}>
+                  <BarcodeLabelPreview template={t} product={product} />
+                  <div style={{ fontSize: 11, fontWeight: 700, marginTop: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.name}</div>
+                  <div style={{ fontSize: 10, color: '#888', whiteSpace: 'pre-line', lineHeight: 1.25 }}>{templateSizeLabel(t)}</div>
+                </button>
+              );
+            })}
+          </div>
+        </>
       )}
     </div>
   );
@@ -1348,6 +1705,8 @@ function BarcodePrintModal({ product, stations, onClose, onBrowserPrint }) {
   const printable = (stations || []).filter((s) => s.is_active !== false);
   const [stationKey, setStationKey] = useState(printable[0]?.key || '');
   const [copies, setCopies] = useState(1);
+  const [template, setTemplate] = useState(loadBarcodeTemplate);
+  const [printTemplate, setPrintTemplate] = useState(loadBarcodeTemplate);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState(null);
   const [error, setError] = useState(null);
@@ -1357,9 +1716,21 @@ function BarcodePrintModal({ product, stations, onClose, onBrowserPrint }) {
     setError(null);
     setNotice(null);
     try {
+      const t = printTemplate;
       await authFetch(`/api/print/barcode/${product.id}`, {
         method: 'POST',
-        body: JSON.stringify({ station_key: stationKey || undefined, copies }),
+        body: JSON.stringify({
+          station_key: stationKey || undefined,
+          copies,
+          sheet_width_mm: t.width,
+          label_width_mm: barcodeCellWidthMm(t),
+          label_height_mm: t.height,
+          gap_mm: t.gap,
+          paper_type: t.paper,
+          label_columns: t.columns || 1,
+          column_gap_mm: t.columnGap || 0,
+          barcode_height_px: barcodeHeightForWidthMm(barcodeCellWidthMm(t)),
+        }),
       });
       setNotice(`ส่งคิวพิมพ์ "${product.name}" × ${copies} ใบแล้ว`);
     } catch (e) {
@@ -1370,9 +1741,19 @@ function BarcodePrintModal({ product, stations, onClose, onBrowserPrint }) {
   }
 
   return (
-    <Modal title={`🖨 พิมพ์ barcode · ${product.name}`} onClose={onClose} maxWidth={480}>
+    <Modal title={`🖨 พิมพ์ barcode · ${product.name}`} onClose={onClose} maxWidth={560}>
       <div style={{ fontSize: 13, color: '#555', marginBottom: 12 }}>
         Barcode: <code style={{ background: '#f0f0f5', padding: '2px 6px', borderRadius: 4 }}>{product.barcode}</code>
+      </div>
+      <BarcodeTemplatePicker
+        product={product}
+        template={template}
+        onChange={(t) => { setTemplate(t); setPrintTemplate(t); }}
+        onDraftChange={setPrintTemplate}
+      />
+      <div style={{ fontSize: 11, color: '#666', margin: '8px 0 12px' }}>
+        thermal barcode ~{barcodeHeightForWidthMm(barcodeCellWidthMm(printTemplate))}px
+        {(printTemplate.columns || 1) > 1 ? ` · พิมพ์ ${printTemplate.columns} ดวง/แถวเมื่อจำนวน=${printTemplate.columns}` : ''}
       </div>
       <Field label="เครื่องพิมพ์">
         <select style={inputStyle} value={stationKey} onChange={(e) => setStationKey(e.target.value)} disabled={busy}>
@@ -1384,16 +1765,25 @@ function BarcodePrintModal({ product, stations, onClose, onBrowserPrint }) {
           ))}
         </select>
       </Field>
-      <Field label="จำนวน (1-8)">
-        <select style={inputStyle} value={copies} onChange={(e) => setCopies(Number(e.target.value) || 1)} disabled={busy}>
-          {[1, 2, 3, 4, 5, 6, 8].map((n) => <option key={n} value={n}>{n}</option>)}
-        </select>
+      <Field label="จำนวน">
+        <input
+          type="number"
+          min={1}
+          step={1}
+          style={inputStyle}
+          value={copies}
+          onChange={(e) => setCopies(Math.max(1, parseInt(e.target.value, 10) || 1))}
+          disabled={busy}
+          placeholder="เช่น 50"
+        />
       </Field>
       {notice && <p style={{ color: '#05795c', fontWeight: 700 }}>{notice}</p>}
       {error && <p style={{ color: '#c00' }}>{error}</p>}
       <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', flexWrap: 'wrap', marginTop: 8 }}>
         <button onClick={onClose} style={btnSecondary}>ปิด</button>
-        <button onClick={onBrowserPrint} style={btnSecondary}>🌐 พิมพ์ผ่านเบราว์เซอร์ (A4)</button>
+        <button onClick={() => onBrowserPrint(printTemplate)} style={btnSecondary}>
+          🌐 พิมพ์ผ่านเบราว์เซอร์ ({templateSizeLabel(printTemplate)})
+        </button>
         <button onClick={sendToPrinter} disabled={busy} style={btnPrimary}>
           {busy ? 'กำลังส่ง...' : '🧾 ส่งคิวพิมพ์'}
         </button>

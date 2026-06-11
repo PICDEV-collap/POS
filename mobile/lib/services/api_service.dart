@@ -160,6 +160,7 @@ class ApiService {
     String? note,
     String? footer,
     int copies = 1,
+    String? stationKey,
   }) async {
     final body = <String, dynamic>{
       'url': url,
@@ -169,10 +170,11 @@ class ApiService {
       if (storeLogo != null && storeLogo.isNotEmpty) 'store_logo': storeLogo,
       if (note != null && note.isNotEmpty) 'note': note,
       if (footer != null && footer.isNotEmpty) 'footer': footer,
+      if (stationKey != null && stationKey.isNotEmpty)
+        'station_key': stationKey,
       'copies': copies.clamp(1, 8),
     };
-    return await _send('POST', '/api/print/qr', body)
-        as Map<String, dynamic>;
+    return await _send('POST', '/api/print/qr', body) as Map<String, dynamic>;
   }
 
   /// Enqueue a thermal barcode label print for a product. Optional
@@ -183,11 +185,27 @@ class ApiService {
     String? stationKey,
     int copies = 1,
     int barcodeHeightPx = 80,
+    int? labelWidthMm,
+    int? labelHeightMm,
+    int? gapMm,
+    String? paperType,
+    int? sheetWidthMm,
+    int? labelColumns,
+    int? columnGapMm,
   }) async {
     final body = <String, dynamic>{
-      'copies': copies.clamp(1, 8),
+      'copies': copies < 1 ? 1 : copies,
       'barcode_height_px': barcodeHeightPx,
-      if (stationKey != null && stationKey.isNotEmpty) 'station_key': stationKey,
+      if (stationKey != null && stationKey.isNotEmpty)
+        'station_key': stationKey,
+      if (sheetWidthMm != null) 'sheet_width_mm': sheetWidthMm,
+      if (labelWidthMm != null) 'label_width_mm': labelWidthMm,
+      if (labelHeightMm != null) 'label_height_mm': labelHeightMm,
+      if (gapMm != null) 'gap_mm': gapMm,
+      if (paperType != null && paperType.isNotEmpty) 'paper_type': paperType,
+      if (labelColumns != null && labelColumns > 1)
+        'label_columns': labelColumns,
+      if (columnGapMm != null) 'column_gap_mm': columnGapMm,
     };
     return await _send('POST', '/api/print/barcode/$productId', body)
         as Map<String, dynamic>;
@@ -230,23 +248,86 @@ class ApiService {
     int? widthChars,
     String? renderMode,
     String? protocol,
+    int? sheetWidthMm,
     int? labelWidthMm,
     int? labelHeightMm,
     int? gapMm,
     int? blineMm,
     String? paperType,
+    int? labelColumns,
+    int? columnGapMm,
+    int? barcodeHeightPx,
+    int? copies,
+    String? bleProfile,
   }) {
     final qs = <String>[];
     if (widthPx != null) qs.add('width_px=$widthPx');
     if (widthChars != null) qs.add('width_chars=$widthChars');
     if (renderMode != null) qs.add('render_mode=$renderMode');
     if (protocol != null) qs.add('protocol=$protocol');
+    if (sheetWidthMm != null) qs.add('paper_width_mm=$sheetWidthMm');
     if (labelWidthMm != null) qs.add('label_width_mm=$labelWidthMm');
     if (labelHeightMm != null) qs.add('label_height_mm=$labelHeightMm');
     if (gapMm != null) qs.add('gap_mm=$gapMm');
     if (blineMm != null) qs.add('bline_mm=$blineMm');
     if (paperType != null) qs.add('paper_type=$paperType');
+    if (labelColumns != null && labelColumns > 1) {
+      qs.add('label_columns=$labelColumns');
+    }
+    if (columnGapMm != null && columnGapMm > 0) {
+      qs.add('column_gap_mm=$columnGapMm');
+    }
+    if (barcodeHeightPx != null) {
+      qs.add('barcode_height_px=$barcodeHeightPx');
+    }
+    if (copies != null && copies >= 1) {
+      qs.add('copies=$copies');
+    }
+    if (bleProfile != null && bleProfile.isNotEmpty) {
+      qs.add('ble_profile=$bleProfile');
+    }
     return qs.join('&');
+  }
+
+  Future<Map<String, dynamic>> getBarcodePrintPayload(
+    int productId, {
+    int? widthPx,
+    int? widthChars,
+    String? renderMode,
+    String? protocol,
+    int? sheetWidthMm,
+    int? labelWidthMm,
+    int? labelHeightMm,
+    int? gapMm,
+    int? blineMm,
+    String? paperType,
+    int? labelColumns,
+    int? columnGapMm,
+    int? barcodeHeightPx,
+    int? copies,
+    String? bleProfile,
+  }) async {
+    final qs = _printQuery(
+      widthPx: widthPx,
+      widthChars: widthChars,
+      renderMode: renderMode,
+      protocol: protocol,
+      sheetWidthMm: sheetWidthMm,
+      labelWidthMm: labelWidthMm,
+      labelHeightMm: labelHeightMm,
+      gapMm: gapMm,
+      blineMm: blineMm,
+      paperType: paperType,
+      labelColumns: labelColumns,
+      columnGapMm: columnGapMm,
+      barcodeHeightPx: barcodeHeightPx,
+      copies: copies,
+      bleProfile: bleProfile,
+    );
+    final path = qs.isEmpty
+        ? '/api/print/payload/barcode/$productId'
+        : '/api/print/payload/barcode/$productId?$qs';
+    return await _send('GET', path) as Map<String, dynamic>;
   }
 
   Future<Map<String, dynamic>> getPrintPayload(
@@ -261,6 +342,7 @@ class ApiService {
     int? gapMm,
     int? blineMm,
     String? paperType,
+    String? bleProfile,
   }) async {
     final base = 'type=$type';
     final more = _printQuery(
@@ -273,9 +355,58 @@ class ApiService {
       gapMm: gapMm,
       blineMm: blineMm,
       paperType: paperType,
+      bleProfile: bleProfile,
     );
     final qs = more.isEmpty ? base : '$base&$more';
     return await _send('GET', '/api/print/payload/order/$orderId?$qs')
+        as Map<String, dynamic>;
+  }
+
+  Future<Map<String, dynamic>> getQrPrintPayload({
+    required String url,
+    String? tableName,
+    String? tableCode,
+    String? storeName,
+    String? storeLogo,
+    String? note,
+    String? footer,
+    int? widthPx,
+    int? widthChars,
+    String? renderMode,
+    String? protocol,
+    int? labelWidthMm,
+    int? labelHeightMm,
+    int? gapMm,
+    int? blineMm,
+    String? paperType,
+    String? bleProfile,
+  }) async {
+    final qs = _printQuery(
+      widthPx: widthPx,
+      widthChars: widthChars,
+      renderMode: renderMode,
+      protocol: protocol,
+      labelWidthMm: labelWidthMm,
+      labelHeightMm: labelHeightMm,
+      gapMm: gapMm,
+      blineMm: blineMm,
+      paperType: paperType,
+      bleProfile: bleProfile,
+    );
+    final query = qs.isEmpty ? '' : '?$qs';
+    final body = <String, dynamic>{
+      'url': url,
+      if (tableName != null && tableName.isNotEmpty) 'table_name': tableName,
+      if (tableCode != null && tableCode.isNotEmpty) 'table_code': tableCode,
+      if (storeName != null && storeName.isNotEmpty) 'store_name': storeName,
+      if (storeLogo != null && storeLogo.isNotEmpty) 'store_logo': storeLogo,
+      if (note != null && note.isNotEmpty) 'note': note,
+      if (footer != null && footer.isNotEmpty) 'footer': footer,
+    };
+    if (bleProfile != null && bleProfile.isNotEmpty) {
+      body['ble_profile'] = bleProfile;
+    }
+    return await _send('POST', '/api/print/payload/qr$query', body)
         as Map<String, dynamic>;
   }
 
@@ -289,6 +420,7 @@ class ApiService {
     int? gapMm,
     int? blineMm,
     String? paperType,
+    String? bleProfile,
   }) async {
     final qs = _printQuery(
       widthPx: widthPx,
@@ -300,6 +432,7 @@ class ApiService {
       gapMm: gapMm,
       blineMm: blineMm,
       paperType: paperType,
+      bleProfile: bleProfile,
     );
     final query = qs.isEmpty ? '' : '?$qs';
     return await _send('GET', '/api/print/payload/test$query')
@@ -323,8 +456,21 @@ class ApiService {
         as Map<String, dynamic>;
   }
 
+  /// TSPL continuous-roll setup — disables gap sensor (clears alarm).
+  Future<Map<String, dynamic>> getPaperSetupPayload({int? labelWidthMm}) async {
+    final qs = _printQuery(
+      protocol: 'tspl',
+      paperType: 'continuous',
+      labelWidthMm: labelWidthMm,
+    );
+    return await _send('GET', '/api/print/payload/paper-setup?$qs')
+        as Map<String, dynamic>;
+  }
+
   // ─── Catalog (no auth) ──────────────────────────────────────────────
-  Future<Map<String, dynamic>> publicMenu({bool includeUnavailable = false}) async {
+  Future<Map<String, dynamic>> publicMenu({
+    bool includeUnavailable = false,
+  }) async {
     final storeQ = _storeQuery();
     final unavailableQ = includeUnavailable ? 'include_unavailable=1' : '';
     final qs = [
@@ -342,11 +488,10 @@ class ApiService {
     int productId, {
     required bool isAvailable,
   }) async {
-    return await _send(
-      'PATCH',
-      '/api/products/$productId/availability',
-      {'is_available': isAvailable},
-    ) as Map<String, dynamic>;
+    return await _send('PATCH', '/api/products/$productId/availability', {
+          'is_available': isAvailable,
+        })
+        as Map<String, dynamic>;
   }
 
   Future<List<Category>> categories() async {

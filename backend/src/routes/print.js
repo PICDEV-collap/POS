@@ -350,6 +350,9 @@ router.post('/qr', authRequired, requireRole('admin', 'staff'), async (req, res)
   }
   const copies = Math.max(1, Math.min(8, parseInt(body.copies, 10) || 1));
   const force = req.query.force === '1' || body.force === true;
+  const stationKey = normalizeStationKey(req.query.station_key || body.station_key);
+  const station = stationKey ? await loadStation(stationKey) : null;
+  if (stationKey && !station) return res.status(404).json({ error: 'station not found' });
   const opts = {
     url,
     tableName: String(body.table_name || body.tableName || '').slice(0, 80),
@@ -364,10 +367,14 @@ router.post('/qr', authRequired, requireRole('admin', 'staff'), async (req, res)
   for (let i = 0; i < copies; i += 1) {
     // Each copy is queued separately so they print sequentially and a
     // single failure doesn't block the rest.
-    const job = await printer.queueQrLabel(opts, { createdBy: req.user.sub, force: force || i > 0 });
+    const job = await printer.queueQrLabel(opts, {
+      createdBy: req.user.sub,
+      force: force || i > 0,
+      station,
+    });
     jobs.push(job);
   }
-  res.status(202).json({ queued: true, copies, jobs, ...(jobs[0] || {}) });
+  res.status(202).json({ queued: true, copies, station_key: stationKey || null, jobs, ...(jobs[0] || {}) });
 });
 
 // Enqueue a barcode-label print for a product. Optional ?station_key=
@@ -388,11 +395,36 @@ router.post('/barcode/:productId', authRequired, requireRole('admin', 'staff'), 
   if (!product) return res.status(404).json({ error: 'not found' });
   if (!product.barcode) return res.status(400).json({ error: 'product has no barcode' });
   const body = req.body || {};
-  const copies = Math.max(1, Math.min(8, parseInt(body.copies, 10) || 1));
+  const copies = Math.max(1, parseInt(body.copies, 10) || 1);
   const force = req.query.force === '1' || body.force === true;
   const stationKey = normalizeStationKey(req.query.station_key || body.station_key);
   const station = stationKey ? await loadStation(stationKey) : null;
   if (stationKey && !station) return res.status(404).json({ error: 'station not found' });
+  const sheetW = parseInt(body.sheet_width_mm ?? body.label_width_mm, 10);
+  const sheetH = parseInt(body.label_height_mm, 10);
+  const labelColumns = parseInt(body.label_columns, 10);
+  const columnGapMm = parseInt(body.column_gap_mm, 10);
+  const cols = Number.isFinite(labelColumns) && labelColumns >= 1
+    ? Math.min(6, labelColumns)
+    : 1;
+  const colGap = Number.isFinite(columnGapMm) ? Math.max(0, Math.min(10, columnGapMm)) : 0;
+  const cellW = cols > 1 && Number.isFinite(sheetW) && sheetW >= 20
+    ? Math.max(12, Math.floor((sheetW - (cols - 1) * colGap) / cols))
+    : sheetW;
+  const paperQuery = {
+    ...req.query,
+    copies: String(copies),
+    paper_width_mm: Number.isFinite(sheetW) ? sheetW : (body.paper_width_mm ?? req.query.paper_width_mm),
+    label_width_mm: Number.isFinite(cellW) ? cellW : (body.label_width_mm ?? req.query.label_width_mm),
+    label_height_mm: body.label_height_mm ?? req.query.label_height_mm,
+    paper_height_mm: body.paper_height_mm ?? req.query.paper_height_mm,
+    gap_mm: body.gap_mm ?? req.query.gap_mm,
+    paper_type: body.paper_type ?? req.query.paper_type,
+    width_px: body.width_px ?? req.query.width_px,
+    label_columns: cols,
+    column_gap_mm: colGap,
+  };
+  const cfgOverride = cfgFromQuery({ query: paperQuery });
   const opts = {
     barcode: product.barcode,
     name: product.name,
@@ -401,13 +433,32 @@ router.post('/barcode/:productId', authRequired, requireRole('admin', 'staff'), 
     barcodeHeightPx: Math.max(40, Math.min(140, parseInt(body.barcode_height_px, 10) || 80)),
   };
   const jobs = [];
-  for (let i = 0; i < copies; i += 1) {
+  if (cols <= 1) {
     const job = await printer.queueBarcodeLabel(opts, {
       createdBy: req.user.sub,
-      force: force || i > 0,
+      force,
       station,
+      cfgOverride,
     });
     jobs.push(job);
+  } else {
+    let remaining = copies;
+    let jobIndex = 0;
+    while (remaining > 0) {
+      const inRow = Math.min(cols, remaining);
+      const job = await printer.queueBarcodeLabel(
+        { ...opts, itemsInRow: inRow },
+        {
+          createdBy: req.user.sub,
+          force: force || jobIndex > 0,
+          station,
+          cfgOverride: { ...cfgOverride, copies: inRow },
+        },
+      );
+      jobs.push(job);
+      remaining -= inRow;
+      jobIndex += 1;
+    }
   }
   res.status(202).json({ queued: true, copies, station_key: stationKey || null, jobs, ...(jobs[0] || {}) });
 });
@@ -479,6 +530,54 @@ router.post('/jobs/:id/cancel', authRequired, requireRole('admin', 'staff'), asy
 // Returns the rendered ESC/POS bytes as base64. Mobile fetches this then
 // sends to a Bluetooth-paired printer via print_bluetooth_thermal.
 
+function buildQrPayload(opts, cfg) {
+  if (cfg.protocol === 'tspl') {
+    return tspl.buildQrTSPL(opts, {
+      ...cfg,
+      paperType: cfg.paperType || 'continuous',
+      gapMm: cfg.gapMm ?? 0,
+      blineMm: cfg.blineMm ?? 0,
+      labelHeightMm: cfg.labelHeightMm ?? 0,
+    });
+  }
+  const qrCfg = {
+    ...cfg,
+    protocol: 'escpos',
+    renderMode: 'image',
+    paperType: 'continuous',
+    cutMode: 'none',
+    gapMm: 0,
+    blineMm: 0,
+    labelHeightMm: 0,
+    feedLines: Math.min(6, Math.max(2, Number(cfg.feedLines) || 3)),
+    bottomFeedPx: Math.min(96, Number(cfg.bottomFeedPx) || 48),
+  };
+  return bitmap.buildQrLabelBitmap(opts, qrCfg);
+}
+
+const { barcodeRasterHeightPx } = require('../lib/barcodeLabelScale');
+
+function normalizeBarcodeOpts(opts, cfg) {
+  const cellCfg = bitmap.resolveBarcodeCellCfg(cfg);
+  const next = { ...opts };
+  const requested = parseInt(next.barcodeHeightPx, 10);
+  const base = Number.isFinite(requested) ? requested : 80;
+  next.barcodeHeightPx = barcodeRasterHeightPx(
+    cellCfg.labelWidthMm || Math.round((cellCfg.widthPx || 384) / 8),
+    cellCfg.labelHeightMm || 0,
+    base,
+  );
+  return next;
+}
+
+function buildBarcodePayload(opts, cfg) {
+  const normalized = normalizeBarcodeOpts(opts, cfg);
+  if (cfg.protocol === 'tspl') {
+    return tspl.buildBarcodeTSPL(normalized, cfg);
+  }
+  return bitmap.buildBarcodeLabelBitmap(normalized, cfg);
+}
+
 function buildPayload(order, type, cfg) {
   // TSPL = label printers (AYIN, IPRT) — always uses bitmap inside TSPL wrapper
   if (cfg.protocol === 'tspl') {
@@ -515,10 +614,25 @@ function cfgFromQuery(req) {
   const feedLines = parseInt(req.query.feed_lines, 10);
   const bottomFeedPx = parseInt(req.query.bottom_feed_px, 10);
   const rasterBandHeight = parseInt(req.query.raster_band_height, 10);
+  const copies = parseInt(req.query.copies, 10);
+  const cols = parseInt(req.query.label_columns, 10);
+  const colGap = parseInt(req.query.column_gap_mm, 10);
+  if (Number.isFinite(copies) && copies >= 1) cfg.copies = copies;
+  if (Number.isFinite(cols) && cols >= 1 && cols <= 6) cfg.labelColumns = cols;
+  if (Number.isFinite(colGap) && colGap >= 0 && colGap <= 10) cfg.columnGapMm = colGap;
   if (Number.isFinite(lw) && lw >= 20 && lw <= 200) {
+    const sheetMm = parseInt(req.query.paper_width_mm, 10);
+    const sheet = Number.isFinite(sheetMm) && sheetMm >= lw ? sheetMm : lw;
+    cfg.paperWidthMm = sheet;
     cfg.labelWidthMm = lw;
-    cfg.paperWidthMm = lw;
-    cfg.widthPx = lw * 8;
+    cfg.widthPx = sheet * 8;
+    if (cfg.labelColumns > 1) {
+      const cellMm = Math.max(
+        12,
+        Math.floor((sheet - (cfg.labelColumns - 1) * (cfg.columnGapMm || 0)) / cfg.labelColumns),
+      );
+      cfg.labelWidthMm = cellMm;
+    }
   }
   if (Number.isFinite(lh) && lh >= 0 && lh <= 300) {
     cfg.labelHeightMm = lh;
@@ -529,7 +643,7 @@ function cfgFromQuery(req) {
     cfg.paperGapMm = gap;
   }
   if (Number.isFinite(bline) && bline >= 0 && bline <= 10) cfg.blineMm = bline;
-  if (Number.isFinite(px) && px >= 200 && px <= 1600) cfg.widthPx = px;
+  if (Number.isFinite(px) && px >= 96 && px <= 1600) cfg.widthPx = px;
   if (Number.isFinite(ch) && ch >= 16  && ch <= 80)  cfg.width = ch;
   if (Number.isFinite(feedLines) && feedLines >= 0 && feedLines <= 24) {
     cfg.feedLines = feedLines;
@@ -555,8 +669,89 @@ function cfgFromQuery(req) {
   } else {
     cfg.protocol = cfg.protocol || 'escpos';
   }
+  if (cfg.paperType === 'continuous') {
+    cfg.cutMode = 'none';
+    const fl = Number(cfg.feedLines);
+    cfg.feedLines = Number.isFinite(fl) ? Math.min(Math.max(fl, 2), 6) : 3;
+    const bf = Number(cfg.bottomFeedPx);
+    cfg.bottomFeedPx = Number.isFinite(bf) ? Math.min(bf, 96) : 48;
+  }
+  const bleProfile = String(req.query.ble_profile || req.body?.ble_profile || '').toLowerCase();
+  if (bleProfile === 'aiyin') {
+    cfg.bleProfile = 'aiyin';
+    cfg.bleMaxRasterRows = 128;
+    cfg.bottomFeedPx = Math.min(Number(cfg.bottomFeedPx) || 48, 24);
+    cfg.rasterBandHeight = Math.min(Number(cfg.rasterBandHeight) || 128, 96);
+  }
   return cfg;
 }
+
+function finalizeMobilePayload(buf, cfg) {
+  if (cfg?.protocol === 'tspl') return { buf, meta: {} };
+  if (cfg?.bleProfile !== 'aiyin') return { buf, meta: {} };
+  if (buf.length >= 8 && buf[0] === 0x1d && buf[1] === 0x76 && buf[2] === 0x30) {
+    return {
+      buf,
+      meta: {
+        ble_raster_bands: bitmap.countGsV0Bands(buf),
+        ble_max_raster_rows: cfg.bleMaxRasterRows || 128,
+        ble_ping: true,
+      },
+    };
+  }
+  const raster = bitmap.toAiyinBleRaster(buf, cfg);
+  if (!raster.length) return { buf, meta: {} };
+  return {
+    buf: raster,
+    meta: {
+      ble_raster_bands: bitmap.countGsV0Bands(raster),
+      ble_max_raster_rows: cfg.bleMaxRasterRows || 128,
+    },
+  };
+}
+
+router.get('/payload/barcode/:productId', authRequired, requireRole('admin', 'staff'), async (req, res) => {
+  const productId = parseInt(req.params.productId, 10);
+  if (!Number.isInteger(productId) || productId <= 0) {
+    return res.status(400).json({ error: 'invalid product id' });
+  }
+  const storeId = require('../lib/storeScope').resolveStoreId(req);
+  const { rows } = await db.query(
+    `SELECT id, name, price, barcode, stock_qty
+       FROM products WHERE id = $1 AND store_id = $2`,
+    [productId, storeId]
+  );
+  const product = rows[0];
+  if (!product) return res.status(404).json({ error: 'not found' });
+  if (!product.barcode) return res.status(400).json({ error: 'product has no barcode' });
+  const cfg = cfgFromQuery(req);
+  const opts = normalizeBarcodeOpts({
+    barcode: product.barcode,
+    name: product.name,
+    price: product.price != null ? Number(product.price) : null,
+    stockQty: product.stock_qty != null ? Number(product.stock_qty) : null,
+    barcodeHeightPx: parseInt(req.query.barcode_height_px, 10) || undefined,
+  }, cfg);
+  const { buf, meta: bleMeta } = finalizeMobilePayload(buildBarcodePayload(opts, cfg), cfg);
+  res.json({
+    type: 'barcode',
+    product_id: product.id,
+    bytes_base64: buf.toString('base64'),
+    bytes_length: buf.length,
+    ble_profile: cfg.bleProfile || null,
+    ...bleMeta,
+    protocol: cfg.protocol || 'escpos',
+    render_mode: cfg.renderMode,
+    width_px: cfg.widthPx,
+    label_width_mm: cfg.labelWidthMm,
+    label_height_mm: cfg.labelHeightMm,
+    gap_mm: cfg.gapMm,
+    bline_mm: cfg.blineMm,
+    paper_type: cfg.paperType,
+    label_columns: cfg.labelColumns || 1,
+    column_gap_mm: cfg.columnGapMm || 0,
+  });
+});
 
 router.get('/payload/order/:id', authRequired, requireRole('admin', 'staff', 'kitchen'), async (req, res) => {
   const order = await loadOrder(req.params.id);
@@ -573,11 +768,13 @@ router.get('/payload/order/:id', authRequired, requireRole('admin', 'staff', 'ki
     restaurantName: settings.name,
     paymentSettings: settings,
   };
-  const buf = buildPayload(order, type, cfg);
+  const { buf, meta: bleMeta } = finalizeMobilePayload(buildPayload(order, type, cfg), cfg);
   res.json({
     type, order_id: order.id,
     bytes_base64: buf.toString('base64'),
     bytes_length: buf.length,
+    ble_profile: cfg.bleProfile || null,
+    ...bleMeta,
     protocol: cfg.protocol || 'escpos',
     render_mode: cfg.renderMode,
     width_px: cfg.widthPx,
@@ -593,6 +790,50 @@ router.get('/payload/order/:id', authRequired, requireRole('admin', 'staff', 'ki
   });
 });
 
+router.post('/payload/qr', authRequired, requireRole('admin', 'staff'), async (req, res) => {
+  const body = req.body || {};
+  const url = String(body.url || '').trim();
+  if (!url || !/^https?:\/\//i.test(url)) {
+    return res.status(400).json({ error: 'url (http/https) required' });
+  }
+  const opts = {
+    url,
+    tableName: String(body.table_name || body.tableName || '').slice(0, 80),
+    tableCode: String(body.table_code || body.tableCode || '').slice(0, 40),
+    storeName: String(body.store_name || body.storeName || '').slice(0, 80),
+    storeLogo: String(body.store_logo || body.storeLogo || '').slice(0, 8),
+    note: String(body.note || 'สแกน QR เพื่อสั่งอาหาร').slice(0, 80),
+    footer: String(body.footer || 'ขอบคุณที่ใช้บริการ').slice(0, 80),
+    qrSize: Math.max(3, Math.min(8, parseInt(body.qr_size, 10) || 8)),
+  };
+  const cfg = cfgFromQuery(req);
+  try {
+    const { buf, meta: bleMeta } = finalizeMobilePayload(buildQrPayload(opts, cfg), cfg);
+    res.json({
+      type: 'qr',
+      bytes_base64: buf.toString('base64'),
+      bytes_length: buf.length,
+      ble_profile: cfg.bleProfile || null,
+      ...bleMeta,
+      protocol: cfg.protocol || 'escpos',
+      render_mode: cfg.renderMode,
+      width_px: cfg.widthPx,
+      width_chars: cfg.width,
+      feed_lines: cfg.feedLines,
+      bottom_feed_px: cfg.bottomFeedPx,
+      raster_band_height: cfg.rasterBandHeight,
+      label_width_mm: cfg.labelWidthMm,
+      label_height_mm: cfg.labelHeightMm,
+      gap_mm: cfg.gapMm,
+      bline_mm: cfg.blineMm,
+      paper_type: cfg.paperType,
+      cut_mode: cfg.cutMode,
+    });
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message || 'QR payload failed' });
+  }
+});
+
 router.get('/payload/test', authRequired, async (req, res) => {
   const cfg = cfgFromQuery(req);
   let buf;
@@ -603,10 +844,14 @@ router.get('/payload/test', authRequired, async (req, res) => {
   } else {
     buf = printer.buildTestPayload(cfg);
   }
+  const finalized = finalizeMobilePayload(buf, cfg);
+  buf = finalized.buf;
   res.json({
     type: 'test',
     bytes_base64: buf.toString('base64'),
     bytes_length: buf.length,
+    ble_profile: cfg.bleProfile || null,
+    ...finalized.meta,
     protocol: cfg.protocol,
     render_mode: cfg.renderMode,
     width_px: cfg.widthPx,
@@ -637,6 +882,26 @@ router.get('/payload/calibrate', authRequired, requireRole('admin', 'staff', 'ki
     paper_type: cfg.paperType,
     label_width_mm: cfg.labelWidthMm,
     label_height_mm: cfg.labelHeightMm,
+  });
+});
+
+// Switch TSPL printer to continuous-roll mode (GAP 0,0) — clears sensor alarm.
+router.get('/payload/paper-setup', authRequired, requireRole('admin', 'staff', 'kitchen'), async (req, res) => {
+  const cfg = cfgFromQuery(req);
+  if (cfg.protocol !== 'tspl') {
+    return res.status(400).json({ error: 'paper-setup is only valid for TSPL printers' });
+  }
+  if (cfg.paperType !== 'continuous') {
+    return res.status(400).json({ error: 'paper-setup continuous requires paper_type=continuous' });
+  }
+  const buf = tspl.buildContinuousSetupTSPL(cfg);
+  res.json({
+    type: 'paper_setup',
+    bytes_base64: buf.toString('base64'),
+    bytes_length: buf.length,
+    protocol: 'tspl',
+    paper_type: cfg.paperType,
+    label_width_mm: cfg.labelWidthMm,
   });
 });
 

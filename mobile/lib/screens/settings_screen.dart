@@ -132,31 +132,29 @@ class _SettingsScreenState extends State<SettingsScreen> {
     try {
       if (allowMdns) {
         final disc = BonsoirDiscovery(type: '_pos_v2._tcp');
-        await disc.ready;
+        await disc.initialize();
         await disc.start();
         _discovery = disc;
         _discSub = disc.eventStream?.listen((evt) {
-          final svc = evt.service;
-          if (svc == null || run != _scanRun) return;
-          if (evt.type == BonsoirDiscoveryEventType.discoveryServiceFound) {
-            // Some platforms need explicit resolve to fill in host.
-            svc.resolve(disc.serviceResolver);
-          } else if (evt.type ==
-              BonsoirDiscoveryEventType.discoveryServiceResolved) {
-            final resolved = svc as ResolvedBonsoirService;
-            final host = resolved.host;
-            if (host == null) return;
-            _addDiscovered(
-              _DiscoveredServer(
-                name: resolved.name,
-                host: host,
-                port: resolved.port,
-                url: 'http://$host:${resolved.port}',
-              ),
-            );
-          } else if (evt.type ==
-              BonsoirDiscoveryEventType.discoveryServiceLost) {
-            setState(() => _found.removeWhere((e) => e.name == svc.name));
+          if (run != _scanRun) return;
+          switch (evt) {
+            case BonsoirDiscoveryServiceFoundEvent(:final service):
+              service.resolve(disc.serviceResolver);
+            case BonsoirDiscoveryServiceResolvedEvent(:final service):
+              final host = service.hostAddress;
+              if (host == null) return;
+              _addDiscovered(
+                _DiscoveredServer(
+                  name: service.name,
+                  host: host,
+                  port: service.port,
+                  url: 'http://$host:${service.port}',
+                ),
+              );
+            case BonsoirDiscoveryServiceLostEvent(:final service):
+              setState(() => _found.removeWhere((e) => e.name == service.name));
+            default:
+              break;
           }
         });
       } else {

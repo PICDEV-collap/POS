@@ -85,11 +85,21 @@ async function uniqueGeneratedBarcode(client, productId) {
   return `SNK${Date.now().toString().slice(-10)}`;
 }
 
-function code128Svg({ barcode, name, price, stockQty }) {
-  const moduleWidth = 2;
+const { barcodeLabelTextScale } = require('../lib/barcodeLabelScale');
+
+function code128Svg({ barcode, name, price, stockQty, labelWidthMm = 50, labelHeightMm = 0 }) {
+  const scale = barcodeLabelTextScale(labelWidthMm, labelHeightMm);
+  const moduleWidth = Math.max(1, Math.round(2 * scale));
   const quiet = 10;
-  const barHeight = 70;
-  const labelHeight = 44;
+  const hmm = Number(labelHeightMm) > 0 ? Number(labelHeightMm) : 0;
+  const barHeight = hmm > 0
+    ? Math.max(28, Math.round(hmm * 8 * 0.42))
+    : Math.max(28, Math.round(70 * scale));
+  const labelHeight = hmm > 0
+    ? Math.max(22, Math.round(hmm * 8 * 0.28))
+    : Math.max(22, Math.round(44 * scale));
+  const fontTitle = Math.max(7, Math.round(13 * scale));
+  const fontFooter = Math.max(6, Math.round(11 * scale));
   const values = code128BValues(barcode);
   const modules = values
     .map((v) => CODE128_PATTERNS[v])
@@ -116,8 +126,8 @@ function code128Svg({ barcode, name, price, stockQty }) {
 <svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
   <rect width="100%" height="100%" fill="#fff"/>
   ${rects.join('\n  ')}
-  <text x="${width / 2}" y="${barHeight + 18}" font-family="Arial, sans-serif" font-size="13" font-weight="700" text-anchor="middle">${escapeXml(name)}</text>
-  <text x="${width / 2}" y="${barHeight + 34}" font-family="Arial, sans-serif" font-size="12" text-anchor="middle">${escapeXml(barcode)}${line2 ? ` · ${escapeXml(line2)}` : ''}</text>
+  <text x="${width / 2}" y="${barHeight + Math.round(labelHeight * 0.4)}" font-family="Arial, sans-serif" font-size="${fontTitle}" font-weight="700" text-anchor="middle">${escapeXml(name)}</text>
+  <text x="${width / 2}" y="${barHeight + Math.round(labelHeight * 0.78)}" font-family="Arial, sans-serif" font-size="${fontFooter}" text-anchor="middle">${escapeXml(barcode)}${line2 ? ` · ${escapeXml(line2)}` : ''}</text>
 </svg>`;
 }
 
@@ -297,11 +307,15 @@ router.get('/:id/barcode/label.svg', authRequired, requireRole('admin', 'staff')
   const product = rows[0];
   if (!product) return res.status(404).json({ error: 'not found' });
   if (!product.barcode) return res.status(400).json({ error: 'product has no barcode' });
+  const lw = parseInt(req.query.label_width_mm, 10);
+  const lh = parseInt(req.query.label_height_mm, 10);
   const svg = code128Svg({
     barcode: product.barcode,
     name: product.name,
     price: product.price,
     stockQty: product.stock_qty,
+    labelWidthMm: Number.isFinite(lw) && lw >= 20 && lw <= 200 ? lw : 50,
+    labelHeightMm: Number.isFinite(lh) && lh >= 0 && lh <= 300 ? lh : 0,
   });
   res.setHeader('Content-Type', 'image/svg+xml; charset=utf-8');
   res.setHeader('Cache-Control', 'no-store');

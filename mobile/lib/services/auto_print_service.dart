@@ -4,7 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'api_service.dart';
 import 'auth_service.dart';
-import 'bluetooth_printer_service.dart';
+import 'pos_printer_service.dart';
 import 'socket_service.dart';
 
 /// Listens to `order:new` socket events and — when the user has a paired BLE
@@ -25,7 +25,7 @@ class AutoPrintService {
   final ApiService api;
   final AuthService auth;
   final SocketService socket;
-  final BluetoothPrinterService printer;
+  final PosPrinterService printer;
 
   bool _wired = false;
   bool _restored = false;
@@ -170,7 +170,10 @@ class AutoPrintService {
         'render_mode': payload['render_mode'] ?? renderMode,
         'paper_type': payload['paper_type'] ?? printer.autoPaperType,
       });
-      final ok = await printer.printBase64(payload['bytes_base64'] as String);
+      final ok = await printer.printBase64(
+        payload['bytes_base64'] as String,
+        acceptPartialWrite: true,
+      );
       if (ok) {
         if (claimId != null) {
           try {
@@ -238,9 +241,7 @@ class AutoPrintService {
   }
 
   bool _isEnabled(String type) {
-    return type == 'kitchen'
-        ? printer.autoPrintKitchen
-        : false;
+    return type == 'kitchen' ? printer.autoPrintKitchen : false;
   }
 
   void _markRetry(_AutoPrintJob job, String error) {

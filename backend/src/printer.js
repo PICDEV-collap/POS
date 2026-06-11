@@ -29,6 +29,7 @@ const db = require('./db');
 const bitmap = require('./printer-bitmap');
 const logger = require('./lib/logger');
 const { paymentQrMeta } = require('./lib/thaiQrPayment');
+const { barcodeRasterHeightPx } = require('./lib/barcodeLabelScale');
 
 // ESC/POS byte helpers
 const ESC = 0x1b;
@@ -303,18 +304,40 @@ function buildQrLabel({
   return Buffer.concat(parts);
 }
 
-async function queueBarcodeLabel(opts, { createdBy, force, station } = {}) {
+function scaledBarcodeHeightPx(cfg, requested) {
+  const cellCfg = bitmap.resolveBarcodeCellCfg(cfg);
+  const cellWmm = cellCfg.labelWidthMm || Math.round((cellCfg.widthPx || 384) / 8);
+  const cellHmm = Number(cfg.labelHeightMm) || 0;
+  return barcodeRasterHeightPx(cellWmm, cellHmm, requested);
+}
+
+async function queueBarcodeLabel(opts, { createdBy, force, station, cfgOverride } = {}) {
   if (!opts?.barcode) {
     const err = new Error('barcode required');
     err.status = 400;
     throw err;
   }
-  const cfg = station ? printerConfigForTarget(station) : printerConfig();
-  // Text-mode ESC/POS printers can request a CODE128 barcode natively
-  // (GS k ...), but rendering reliability varies. The bitmap path works
-  // on any thermal printer that accepts raster — including image-mode
-  // A70Pro. Keep it simple: always bitmap.
-  const payload = bitmap.buildBarcodeLabelBitmap(opts, cfg);
+  const cfg = {
+    ...(station ? printerConfigForTarget(station) : printerConfig()),
+    ...(cfgOverride || {}),
+  };
+  const cellCfg = bitmap.resolveBarcodeCellCfg(cfg);
+  if (opts.barcodeHeightPx == null || opts.barcodeHeightPx === undefined) {
+    opts.barcodeHeightPx = scaledBarcodeHeightPx(cellCfg, 80);
+  } else {
+    opts.barcodeHeightPx = scaledBarcodeHeightPx(cellCfg, opts.barcodeHeightPx);
+  }
+  const copies = Math.max(1, Number(cfg.copies) || 1);
+  let payload;
+  if (cfg.protocol === 'tspl') {
+    const tspl = require('./printer-tspl');
+    payload = tspl.buildBarcodeTSPL(opts, { ...cfg, copies });
+  } else {
+    payload = bitmap.buildBarcodeLabelBitmap(opts, cfg);
+    if (copies > 1) {
+      payload = Buffer.concat(Array.from({ length: copies }, () => payload));
+    }
+  }
   const labelParts = ['Barcode'];
   if (opts.name) labelParts.push(opts.name);
   if (opts.barcode) labelParts.push(`(${opts.barcode})`);
@@ -329,19 +352,26 @@ async function queueBarcodeLabel(opts, { createdBy, force, station } = {}) {
   });
 }
 
-async function queueQrLabel(opts, { createdBy, force } = {}) {
+async function queueQrLabel(opts, { createdBy, force, station } = {}) {
   if (!opts?.url) {
     const err = new Error('url required');
     err.status = 400;
     throw err;
   }
-  const cfg = printerConfig();
-  // Image-mode printers don't render Thai via TIS-620 — they render
-  // glyphs from a font file. Use the bitmap builder for them so the
-  // QR label shows correct Thai (ชื่อร้าน, ชื่อโต๊ะ, ขอบคุณ ...).
-  const payload = cfg.renderMode === 'image'
-    ? bitmap.buildQrLabelBitmap(opts, cfg)
-    : buildQrLabel(opts, cfg);
+  const baseCfg = station ? printerConfigForTarget(station) : printerConfig();
+  const cfg = {
+    ...baseCfg,
+    protocol: 'escpos',
+    renderMode: 'image',
+    paperType: 'continuous',
+    cutMode: 'none',
+    gapMm: 0,
+    blineMm: 0,
+    labelHeightMm: 0,
+    feedLines: Math.min(6, Math.max(2, Number(baseCfg.feedLines) || 3)),
+    bottomFeedPx: Math.min(96, Number(baseCfg.bottomFeedPx) || 48),
+  };
+  const payload = bitmap.buildQrLabelBitmap(opts, cfg);
   const labelParts = ['QR'];
   if (opts.tableName) labelParts.push(opts.tableName);
   if (opts.tableCode) labelParts.push(`(${opts.tableCode})`);

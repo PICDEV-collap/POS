@@ -36,4 +36,13 @@ function code128BValues(value) {
   return values;
 }
 
-module.exports = { CODE128_PATTERNS, code128BValues };
+function code128ModuleSum(value) {
+  const values = code128BValues(value);
+  return values
+    .map((v) => CODE128_PATTERNS[v])
+    .join('')
+    .split('')
+    .reduce((sum, n) => sum + Number(n), 0);
+}
+
+module.exports = { CODE128_PATTERNS, code128BValues, code128ModuleSum };

@@ -26,6 +26,7 @@ class BluetoothPrinterService extends ChangeNotifier {
   static const _kBline = 'bt_printer_bline_mm';
   static const _kPaperType = 'bt_printer_paper_type'; // continuous|gap|bline
   static const _kSafeProtocolV2 = 'bt_printer_safe_protocol_v2';
+  static const _kTsplAiyinV3 = 'bt_printer_tspl_aiyin_v3';
   // Auto-print this BLE printer when an order:new socket event arrives.
   // Defaults to false — admin must opt in from the printer settings screen.
   static const _kAutoPrintKitchen = 'bt_auto_print_kitchen';
@@ -50,7 +51,9 @@ class BluetoothPrinterService extends ChangeNotifier {
 
   BluetoothDevice? _device;
   BluetoothCharacteristic? _writeChar;
+  BluetoothCharacteristic? _flowChar;
   StreamSubscription<BluetoothConnectionState>? _connSub;
+  StreamSubscription<List<int>>? _flowSub;
   Future<bool>? _connectFuture;
   Future<void> _printLock = Future.value();
   int _negotiatedMtu = 23;
@@ -69,6 +72,9 @@ class BluetoothPrinterService extends ChangeNotifier {
   String get protocol => _protocol;
   bool get hasPrinter => _mac != null;
   bool get connected => _connected;
+  String? get lastWriteCharUuid => _writeChar?.uuid.toString();
+  String get lastNotifySummary => _flowChar != null ? 'flow-on' : 'no-notify';
+  bool get isAiyinBlePrinter => looksLikeLabelPrinter;
   String? get lastError => _lastError;
 
   // Bitmap size derived from label width — render exactly to fit the paper.
@@ -76,7 +82,7 @@ class BluetoothPrinterService extends ChangeNotifier {
     // Most 58mm ESC/POS receipt printers expose a 384-dot printable area
     // (around 48mm), not the full paper width. Sending 464-dot bitmaps over
     // BLE is slower and can make text look smaller relative to the roll.
-    if (_protocol == 'escpos' && _paperType == 'continuous') {
+    if (autoProtocol == 'escpos' && autoPaperType == 'continuous') {
       if (_labelWidthMm <= 58) return 384;
       if (_labelWidthMm <= 80) return 576;
     }
@@ -103,7 +109,11 @@ class BluetoothPrinterService extends ChangeNotifier {
 
   bool get _shouldForceEscposForBle {
     if (_protocol != 'tspl') return false;
+    // TSPL expects die-cut labels; continuous receipt rolls need ESC/POS.
+    if (_paperType == 'continuous') return true;
     final n = (_name ?? '').toLowerCase();
+    // A70 Pro over BLE is typically a receipt printer (height 0 = roll).
+    if (n.contains('a70') && _labelHeightMm <= 0) return true;
     return n.contains('mini-printer') ||
         n.contains('mini printer') ||
         n.contains('thermal') ||
@@ -273,6 +283,12 @@ class BluetoothPrinterService extends ChangeNotifier {
     '0000fee7-0000-1000-8000-00805f9b34fb',
   );
 
+  /// Known write channels (FEC7/FF02). Picking the wrong GATT char "succeeds"
+  /// at the OS level but the printer never prints.
+  static const _kWriteCharHints = ['fec7', 'ff02', 'ffc1', '18f1'];
+  static const _kFlowCharHints = ['fec8', 'ff03'];
+  static const _kPrinterServiceHints = ['fee7', 'ff00', '18f0'];
+
   /// Two-stage BLE scan:
   ///   Stage 1 (≤3s): filter by FEE7 service — fast hit on A70Pro/AYIN/IPRT.
   ///   Stage 2 (remaining): unfiltered scan as fallback for printers that
@@ -338,6 +354,18 @@ class BluetoothPrinterService extends ChangeNotifier {
     return completer.future;
   }
 
+  static bool namePrefersTsplBle(String name) {
+    final n = name.toLowerCase();
+    return n.contains('a70') ||
+        n.contains('ayin') ||
+        n.contains('iprt') ||
+        n.contains('label') ||
+        n.contains('xprinter') ||
+        n.contains('-ble');
+  }
+
+  bool get _prefersTsplBle => namePrefersTsplBle(_name ?? '');
+
   static bool _looksPrinter(ScanResult r) {
     final n =
         (r.advertisementData.advName.isNotEmpty
@@ -361,19 +389,28 @@ class BluetoothPrinterService extends ChangeNotifier {
     final p = await SharedPreferences.getInstance();
     await p.setString(_kMac, _mac!);
     await p.setString(_kName, _name ?? '');
-    // Safe default for BLE printers is ESC/POS bitmap. If TSPL is sent to an
-    // ESC/POS-mode printer it prints raw commands like SIZE/GAP/BITMAP.
-    _protocol = 'escpos';
-    _renderMode = 'image';
-    _paperType = 'continuous';
-    _labelHeightMm = 0;
-    _gapMm = 0;
+    if (namePrefersTsplBle(n)) {
+      _protocol = 'tspl';
+      _renderMode = 'image';
+      _paperType = 'continuous';
+      _labelWidthMm = 58;
+      _labelHeightMm = 0;
+      _gapMm = 0;
+    } else {
+      _protocol = 'escpos';
+      _renderMode = 'image';
+      _paperType = 'continuous';
+      _labelHeightMm = 0;
+      _gapMm = 0;
+    }
     await p.setString(_kProtocol, _protocol);
     await p.setString(_kRenderMode, _renderMode);
     await p.setString(_kPaperType, _paperType);
+    await p.setInt(_kLabelW, _labelWidthMm);
     await p.setInt(_kLabelH, _labelHeightMm);
     await p.setInt(_kGap, _gapMm);
     await p.setBool(_kSafeProtocolV2, true);
+    await p.setBool(_kTsplAiyinV3, true);
     await disconnect();
     notifyListeners();
   }
@@ -388,10 +425,66 @@ class BluetoothPrinterService extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Re-apply TSPL for AiYin/A70 if an older build left protocol on ESC/POS.
+  Future<void> ensureProtocolForDevice() async {
+    if (!_prefersTsplBle || _protocol == 'tspl') return;
+    _protocol = 'tspl';
+    _renderMode = 'image';
+    _paperType = 'continuous';
+    _labelWidthMm = 58;
+    _labelHeightMm = 0;
+    _gapMm = 0;
+    final p = await SharedPreferences.getInstance();
+    await p.setString(_kProtocol, _protocol);
+    await p.setString(_kRenderMode, _renderMode);
+    await p.setString(_kPaperType, _paperType);
+    await p.setInt(_kLabelW, _labelWidthMm);
+    await p.setInt(_kLabelH, _labelHeightMm);
+    await p.setInt(_kGap, _gapMm);
+    await p.setBool(_kTsplAiyinV3, true);
+    notifyListeners();
+  }
+
   Future<bool> warmUp() async {
-    if (_mac == null) return false;
+    if (_mac == null) {
+      _lastError = 'ยังไม่ได้เลือกเครื่องพิมพ์ Bluetooth';
+      notifyListeners();
+      return false;
+    }
+    await ensureProtocolForDevice();
     if (_connected && _writeChar != null) return true;
     return _connectAndDiscover();
+  }
+
+  /// Default BLE ATT MTU minus header → 20-byte chunks (safe for A70/FEC7).
+  static const int _kDefaultMtu = 23;
+
+  bool get _skipMtuNegotiation {
+    final n = (_name ?? '').toLowerCase();
+    return n.contains('a70') ||
+        n.contains('ayin') ||
+        n.contains('iprt') ||
+        n.contains('-ble');
+  }
+
+  Future<int> _resolveMtu(BluetoothDevice device) async {
+    if (_skipMtuNegotiation) {
+      debugPrint(
+        '[ble-printer] skip MTU negotiate ($_name) — use $_kDefaultMtu',
+      );
+      return _kDefaultMtu;
+    }
+    try {
+      final mtu = await device
+          .requestMtu(247)
+          .timeout(const Duration(seconds: 2));
+      return mtu.clamp(_kDefaultMtu, 247);
+    } on TimeoutException {
+      debugPrint('[ble-printer] MTU negotiate timed out — use $_kDefaultMtu');
+    } catch (e) {
+      debugPrint('[ble-printer] MTU negotiate failed: $e');
+    }
+    return _kDefaultMtu;
   }
 
   Future<bool> _connectAndDiscover() {
@@ -413,6 +506,7 @@ class BluetoothPrinterService extends ChangeNotifier {
         notifyListeners();
       });
       await _device!.connect(
+        license: License.nonprofit,
         timeout: const Duration(seconds: 8),
         autoConnect: false,
       );
@@ -421,32 +515,37 @@ class BluetoothPrinterService extends ChangeNotifier {
           connectionPriorityRequest: ConnectionPriority.high,
         );
       } catch (_) {}
-      // Try to bump MTU for larger writes (helps with bitmap mode)
-      try {
-        _negotiatedMtu = await _device!.requestMtu(247);
-      } catch (_) {
-        _negotiatedMtu = _device!.mtuNow;
-      }
-      // Wait briefly for state propagation
+      _negotiatedMtu = await _resolveMtu(_device!);
       await Future.delayed(const Duration(milliseconds: 150));
 
-      // Discover services and find a write characteristic.
+      // Discover services and find the printer write + optional flow-control chars.
       final services = await _device!.discoverServices();
+      _flowChar = null;
       BluetoothCharacteristic? wc;
-      // 1st pass: prefer FEE7 service (AYIN/Tencent printer protocol)
       for (final s in services) {
         final sid = s.uuid.toString().toLowerCase();
-        if (sid.contains('fee7') ||
-            sid.contains('ff00') ||
-            sid.contains('18f0')) {
-          wc = _bestWriteCharacteristic(s.characteristics);
-          if (wc != null) break;
-        }
+        if (!_kPrinterServiceHints.any(sid.contains)) continue;
+        _flowChar ??= _findCharacteristic(
+          s.characteristics,
+          _kFlowCharHints,
+          notify: true,
+        );
+        wc = _findCharacteristic(
+          s.characteristics,
+          _kWriteCharHints,
+          write: true,
+        );
+        wc ??= _pickWriteCharacteristic(s.characteristics);
+        if (wc != null) break;
       }
-      // 2nd pass: any write characteristic
       if (wc == null) {
         for (final s in services) {
-          wc = _bestWriteCharacteristic(s.characteristics);
+          _flowChar ??= _findCharacteristic(
+            s.characteristics,
+            _kFlowCharHints,
+            notify: true,
+          );
+          wc = _pickWriteCharacteristic(s.characteristics);
           if (wc != null) break;
         }
       }
@@ -456,7 +555,13 @@ class BluetoothPrinterService extends ChangeNotifier {
         return false;
       }
       _writeChar = wc;
+      await _enableFlowControl();
+      _connected = _device?.isConnected == true;
       _lastError = null;
+      debugPrint(
+        '[ble-printer] write=${wc.uuid} flow=${_flowChar?.uuid} '
+        'w=${wc.properties.write} wnr=${wc.properties.writeWithoutResponse}',
+      );
       notifyListeners();
       return true;
     } catch (e) {
@@ -467,16 +572,51 @@ class BluetoothPrinterService extends ChangeNotifier {
     }
   }
 
-  BluetoothCharacteristic? _bestWriteCharacteristic(
+  BluetoothCharacteristic? _findCharacteristic(
+    List<BluetoothCharacteristic> chars,
+    List<String> hints, {
+    bool write = false,
+    bool notify = false,
+  }) {
+    for (final hint in hints) {
+      for (final c in chars) {
+        if (!c.uuid.toString().toLowerCase().contains(hint)) continue;
+        final p = c.properties;
+        if (notify && (p.notify || p.indicate)) return c;
+        if (write && (p.writeWithoutResponse || p.write)) return c;
+      }
+    }
+    return null;
+  }
+
+  BluetoothCharacteristic? _pickWriteCharacteristic(
     List<BluetoothCharacteristic> chars,
   ) {
-    BluetoothCharacteristic? fallback;
+    BluetoothCharacteristic? withResponse;
     for (final c in chars) {
+      final u = c.uuid.toString().toLowerCase();
+      if (_kFlowCharHints.any(u.contains)) continue;
       final p = c.properties;
-      if (p.write) return c;
-      if (fallback == null && p.writeWithoutResponse) fallback = c;
+      if (p.writeWithoutResponse) return c;
+      if (p.write) withResponse = c;
     }
-    return fallback;
+    return withResponse;
+  }
+
+  Future<void> _enableFlowControl() async {
+    _flowSub?.cancel();
+    _flowSub = null;
+    final fc = _flowChar;
+    if (fc == null) return;
+    try {
+      await fc.setNotifyValue(true).timeout(const Duration(seconds: 3));
+      _flowSub = fc.lastValueStream.listen((_) {});
+      await Future.delayed(const Duration(milliseconds: 80));
+    } on TimeoutException {
+      debugPrint('[ble-printer] flow-control notify timed out — continue');
+    } catch (e) {
+      debugPrint('[ble-printer] flow-control notify failed: $e');
+    }
   }
 
   Future<T> _withPrintLock<T>(Future<T> Function() action) async {
@@ -493,20 +633,27 @@ class BluetoothPrinterService extends ChangeNotifier {
 
   Future<void> _settleAfterWrite(int byteLength) async {
     final ms = byteLength > 18000
-        ? 850
+        ? 1200
         : byteLength > 12000
-        ? 600
+        ? 900
         : byteLength > 4000
-        ? 300
-        : 120;
+        ? 500
+        : 250;
     await Future.delayed(Duration(milliseconds: ms));
   }
 
-  Future<bool> printBytes(List<int> bytes) {
-    return _withPrintLock(() => _printBytesLocked(bytes));
+  static const _kPostPrintFeed = <int>[0x1b, 0x64, 0x04];
+
+  Future<bool> printBytes(List<int> bytes, {bool acceptPartialWrite = false}) {
+    return _withPrintLock(
+      () => _printBytesLocked(bytes, acceptPartialWrite: acceptPartialWrite),
+    );
   }
 
-  Future<bool> _printBytesLocked(List<int> bytes) async {
+  Future<bool> _printBytesLocked(
+    List<int> bytes, {
+    bool acceptPartialWrite = false,
+  }) async {
     if (_mac == null) {
       _lastError = 'no printer paired';
       notifyListeners();
@@ -516,32 +663,41 @@ class BluetoothPrinterService extends ChangeNotifier {
       if (!await _connectAndDiscover()) return false;
     }
 
+    if (bytes.length < 8) {
+      _lastError = 'payload too small (${bytes.length} bytes)';
+      notifyListeners();
+      return false;
+    }
+
     final ok = await _writeChunked(bytes);
     if (ok) {
+      await _writeChunked(_kPostPrintFeed, flushOnly: true);
       await _settleAfterWrite(bytes.length);
       return true;
     }
 
     // Retry: full reconnect
     await disconnect();
-    await Future.delayed(const Duration(milliseconds: 300));
+    await Future.delayed(const Duration(milliseconds: 400));
     if (!await _connectAndDiscover()) return false;
     final retryOk = await _writeChunked(bytes);
-    if (retryOk) await _settleAfterWrite(bytes.length);
+    if (retryOk) {
+      await _writeChunked(_kPostPrintFeed, flushOnly: true);
+      await _settleAfterWrite(bytes.length);
+    }
     return retryOk;
   }
 
-  Future<bool> _writeChunked(List<int> bytes) async {
+  Future<bool> _writeChunked(List<int> bytes, {bool flushOnly = false}) async {
     if (_writeChar == null) return false;
-    // BLE write payload limit depends on negotiated MTU. This printer reports
-    // max 182 bytes for write-with-response, so keep under that hard cap.
     final props = _writeChar!.properties;
-    // Bitmap receipts are large binary command streams. Cheap BLE printers can
-    // overrun and print raw bytes if we use writeWithoutResponse too fast.
-    final withoutResponse = !props.write && props.writeWithoutResponse;
-    final mtuPayload = (_negotiatedMtu - 3).clamp(20, 180).toInt();
-    final chunk = mtuPayload;
-    final largePayload = bytes.length > 12000;
+    // FEE7/FEC7 and FF00/FF02 printers expect writeWithoutResponse.
+    final withoutResponse = props.writeWithoutResponse || !props.write;
+    final mtuPayload = (_negotiatedMtu - 3).clamp(10, 247).toInt();
+    final chunk = withoutResponse
+        ? mtuPayload.clamp(10, 20)
+        : mtuPayload.clamp(20, 180);
+    final expectedChunks = (bytes.length / chunk).ceil();
     final sw = Stopwatch()..start();
     var chunks = 0;
     try {
@@ -550,22 +706,25 @@ class BluetoothPrinterService extends ChangeNotifier {
         await _writeChar!.write(
           bytes.sublist(i, end),
           withoutResponse: withoutResponse,
-          timeout: 10,
+          timeout: 15,
         );
         chunks += 1;
-        if (i + chunk < bytes.length) {
-          if (withoutResponse) {
-            if (chunks % 3 == 0) {
-              await Future.delayed(const Duration(milliseconds: 24));
-            }
-          } else if (largePayload && chunks % 6 == 0) {
-            await Future.delayed(const Duration(milliseconds: 8));
-          }
+        if (i + chunk < bytes.length || flushOnly) {
+          final gapMs = withoutResponse ? 14 : 6;
+          await Future.delayed(Duration(milliseconds: gapMs));
         }
       }
+      if (!flushOnly &&
+          chunks < expectedChunks &&
+          chunks < (expectedChunks * 0.95).floor()) {
+        _lastError =
+            'ส่งข้อมูลไม่ครบ ($chunks/$expectedChunks chunks) — กระดาษอาจไม่ออก';
+        notifyListeners();
+        return false;
+      }
       debugPrint(
-        '[ble-printer] sent bytes=${bytes.length} chunks=$chunks '
-        'chunk=$chunk mtu=$_negotiatedMtu '
+        '[ble-printer] sent bytes=${bytes.length} chunks=$chunks/$expectedChunks '
+        'chunk=$chunk mtu=$_negotiatedMtu char=${_writeChar!.uuid} '
         'mode=${withoutResponse ? "writeWithoutResponse" : "writeWithResponse"} '
         'elapsed_ms=${sw.elapsedMilliseconds}',
       );
@@ -575,21 +734,16 @@ class BluetoothPrinterService extends ChangeNotifier {
     } catch (e) {
       _lastError = 'write failed: $e';
       debugPrint(
-        '[ble-printer] write failed bytes=${bytes.length} chunks=$chunks '
-        'chunk=$chunk mtu=$_negotiatedMtu '
+        '[ble-printer] write failed bytes=${bytes.length} chunks=$chunks/$expectedChunks '
+        'chunk=$chunk mtu=$_negotiatedMtu char=${_writeChar!.uuid} '
         'mode=${withoutResponse ? "writeWithoutResponse" : "writeWithResponse"} '
         'error=$e',
       );
       notifyListeners();
-      // Once at least one BLE chunk was acknowledged by the OS, the printer may
-      // already have buffered and printed the ticket even if the connection
-      // reports an error while closing. Treat it as accepted so we never send
-      // the same kitchen/receipt payload twice.
-      if (chunks > 0) {
-        debugPrint(
-          '[ble-printer] treating partial write as accepted to prevent duplicate print '
-          'bytes=${bytes.length} chunks=$chunks',
-        );
+      if (chunks > 0 &&
+          !flushOnly &&
+          chunks >= (expectedChunks * 0.95).floor()) {
+        debugPrint('[ble-printer] near-complete write despite error — accept');
         _lastError = null;
         notifyListeners();
         return true;
@@ -598,8 +752,33 @@ class BluetoothPrinterService extends ChangeNotifier {
     }
   }
 
-  Future<bool> printBase64(String b64) async {
-    return printBytes(base64.decode(b64));
+  /// TSPL continuous-roll setup — config only (no PRINT), Expert Label style.
+  List<int> continuousPaperSetupBytes({int? labelWidthMm}) {
+    final w = labelWidthMm ?? _labelWidthMm;
+    return utf8.encode(
+      'SIZE $w mm, 10 mm\r\n'
+      'GAP 0,0\r\n'
+      'BLINE 0,0\r\n'
+      'SET GAP OFF\r\n'
+      'SET CUTTER OFF\r\n'
+      'SET PEEL OFF\r\n'
+      'SET TEAR ON\r\n'
+      'DIRECTION 0\r\n'
+      'REFERENCE 0,0\r\n',
+    );
+  }
+
+  Future<bool> setupContinuousPaper() =>
+      printBytes(continuousPaperSetupBytes());
+
+  Future<bool> printBase64(
+    String b64, {
+    bool acceptPartialWrite = false,
+  }) async {
+    return printBytes(
+      base64.decode(b64),
+      acceptPartialWrite: acceptPartialWrite,
+    );
   }
 
   Future<void> disconnect() async {
@@ -608,8 +787,11 @@ class BluetoothPrinterService extends ChangeNotifier {
     } catch (_) {}
     _connSub?.cancel();
     _connSub = null;
+    _flowSub?.cancel();
+    _flowSub = null;
     _device = null;
     _writeChar = null;
+    _flowChar = null;
     _connected = false;
     notifyListeners();
   }

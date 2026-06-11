@@ -10,7 +10,11 @@ import '../models/product.dart';
 import '../services/api_service.dart';
 import '../services/auth_service.dart';
 import '../services/socket_service.dart';
+import '../services/pos_printer_service.dart';
+import '../services/print_helper.dart';
 import 'bluetooth_printer_settings.dart';
+import '../widgets/label_paper_config.dart';
+import '../widgets/barcode_label_templates.dart';
 
 const _kNavy = Color(0xFF1A1A2E);
 const _kGold = Color(0xFFFFD166);
@@ -841,16 +845,18 @@ class _ProductsTabState extends State<_ProductsTab> {
       });
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(nextAvail
-              ? '${p.name} — เปิดขายแล้ว'
-              : '${p.name} — ปิดขาย (ของหมด)'),
+          content: Text(
+            nextAvail
+                ? '${p.name} — เปิดขายแล้ว'
+                : '${p.name} — ปิดขาย (ของหมด)',
+          ),
         ),
       );
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('เปลี่ยนสถานะไม่สำเร็จ: $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('เปลี่ยนสถานะไม่สำเร็จ: $e')));
       }
     } finally {
       if (mounted) setState(() => _availBusyIds.remove(p.id));
@@ -1871,14 +1877,19 @@ class _TablesTabState extends State<_TablesTab> {
     if (_printingTableIds.contains(table.id)) return; // double-tap guard
     setState(() => _printingTableIds.add(table.id));
     try {
-      await widget.api.printQrLabel(
+      final msg = await printQrLabel(
+        context: context,
+        api: widget.api,
         url: url,
         tableName: table.name,
         tableCode: table.code,
       );
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('ส่งคิวพิมพ์ QR "${table.name}" แล้ว')),
+          SnackBar(
+            content: Text(msg),
+            backgroundColor: msg.startsWith('✅') ? null : Colors.red,
+          ),
         );
       }
     } catch (e) {
@@ -2156,66 +2167,68 @@ class _TablesTabState extends State<_TablesTab> {
                               ),
                             ),
                             const SizedBox(height: 12),
-                            Builder(builder: (ctx) {
-                              final role = context
-                                  .read<AuthService>()
-                                  .user
-                                  ?.role;
-                              final canPrint = role == 'admin' ||
-                                  role == 'super_admin' ||
-                                  role == 'staff';
-                              final printing =
-                                  _printingTableIds.contains(t.id);
-                              return Wrap(
-                                spacing: 4,
-                                runSpacing: 4,
-                                alignment: WrapAlignment.spaceEvenly,
-                                children: [
-                                  if (canPrint)
-                                    TextButton.icon(
-                                      icon: printing
-                                          ? const SizedBox(
-                                              width: 14,
-                                              height: 14,
-                                              child:
-                                                  CircularProgressIndicator(
-                                                strokeWidth: 2,
-                                              ),
-                                            )
-                                          : const Icon(Icons.receipt_long),
-                                      label: Text(
-                                        printing
-                                            ? 'กำลังส่ง…'
-                                            : 'พิมพ์ QR',
+                            Builder(
+                              builder: (ctx) {
+                                final role = context
+                                    .read<AuthService>()
+                                    .user
+                                    ?.role;
+                                final canPrint =
+                                    role == 'admin' ||
+                                    role == 'super_admin' ||
+                                    role == 'staff';
+                                final printing = _printingTableIds.contains(
+                                  t.id,
+                                );
+                                return Wrap(
+                                  spacing: 4,
+                                  runSpacing: 4,
+                                  alignment: WrapAlignment.spaceEvenly,
+                                  children: [
+                                    if (canPrint)
+                                      TextButton.icon(
+                                        icon: printing
+                                            ? const SizedBox(
+                                                width: 14,
+                                                height: 14,
+                                                child:
+                                                    CircularProgressIndicator(
+                                                      strokeWidth: 2,
+                                                    ),
+                                              )
+                                            : const Icon(Icons.receipt_long),
+                                        label: Text(
+                                          printing ? 'กำลังส่ง…' : 'พิมพ์ QR',
+                                        ),
+                                        onPressed: printing
+                                            ? null
+                                            : () => _printQr(t, url),
                                       ),
-                                      onPressed: printing
-                                          ? null
-                                          : () => _printQr(t, url),
+                                    TextButton.icon(
+                                      icon: const Icon(Icons.refresh),
+                                      label: const Text('Rotate QR'),
+                                      onPressed: () => _rotate(t.id),
                                     ),
-                                  TextButton.icon(
-                                    icon: const Icon(Icons.refresh),
-                                    label: const Text('Rotate QR'),
-                                    onPressed: () => _rotate(t.id),
-                                  ),
-                                  TextButton.icon(
-                                    icon: const Icon(Icons.edit),
-                                    label: const Text('แก้ไข'),
-                                    onPressed: () => _openEditor(t),
-                                  ),
-                                  TextButton.icon(
-                                    icon: const Icon(
-                                      Icons.delete,
-                                      color: Colors.red,
+                                    TextButton.icon(
+                                      icon: const Icon(Icons.edit),
+                                      label: const Text('แก้ไข'),
+                                      onPressed: () => _openEditor(t),
                                     ),
-                                    label: const Text(
-                                      'ลบ',
-                                      style: TextStyle(color: Colors.red),
+                                    TextButton.icon(
+                                      icon: const Icon(
+                                        Icons.delete,
+                                        color: Colors.red,
+                                      ),
+                                      label: const Text(
+                                        'ลบ',
+                                        style: TextStyle(color: Colors.red),
+                                      ),
+                                      onPressed: () => _delete(t),
                                     ),
-                                    onPressed: () => _delete(t),
-                                  ),
-                                ],
-                              );
-                            }),
+                                  ],
+                                );
+                              },
+                            ),
                           ],
                         ),
                       ),
@@ -3159,9 +3172,11 @@ class _BarcodePrintDialog extends StatefulWidget {
 }
 
 class _BarcodePrintDialogState extends State<_BarcodePrintDialog> {
+  final GlobalKey<BarcodeLabelTemplatePickerState> _pickerKey = GlobalKey();
   List<Map<String, dynamic>> _stations = [];
   String? _stationKey;
-  int _copies = 1;
+  final TextEditingController _copiesCtrl = TextEditingController(text: '1');
+  BarcodeLabelTemplate _template = kBarcodeLabelTemplates[3];
   bool _loading = true;
   bool _sending = false;
   String? _error;
@@ -3169,7 +3184,42 @@ class _BarcodePrintDialogState extends State<_BarcodePrintDialog> {
   @override
   void initState() {
     super.initState();
+    _initTemplate();
     _loadStations();
+  }
+
+  @override
+  void dispose() {
+    _copiesCtrl.dispose();
+    super.dispose();
+  }
+
+  int get _copies {
+    final n = int.tryParse(_copiesCtrl.text.trim());
+    return (n != null && n >= 1) ? n : 1;
+  }
+
+  Future<void> _initTemplate() async {
+    final pos = context.read<PosPrinterService>();
+    final fromBt = defaultLabelPresetFromBt(pos);
+    BarcodeLabelTemplate? fallback;
+    for (final t in kBarcodeLabelTemplates) {
+      if (t.widthMm == fromBt.widthMm &&
+          t.heightMm == fromBt.heightMm &&
+          t.paperType == fromBt.paperType) {
+        fallback = t;
+        break;
+      }
+    }
+    final saved = await loadSavedBarcodeTemplate(
+      fallback: fallback ?? kBarcodeLabelTemplates[3],
+    );
+    if (!mounted) return;
+    setState(() => _template = saved);
+  }
+
+  void _applyTemplate(BarcodeLabelTemplate t) {
+    setState(() => _template = t);
   }
 
   Future<void> _loadStations() async {
@@ -3199,10 +3249,45 @@ class _BarcodePrintDialogState extends State<_BarcodePrintDialog> {
       _error = null;
     });
     try {
+      final t = _pickerKey.currentState?.templateForPrint() ?? _template;
+      final pos = context.read<PosPrinterService>();
+      if (pos.hasPrinter) {
+        final msg = await printProductBarcode(
+          context: context,
+          api: widget.api,
+          productId: widget.product.id,
+          sheetWidthMm: t.widthMm,
+          cellWidthMm: t.cellWidthMm,
+          labelHeightMm: t.heightMm,
+          gapMm: t.gapMm,
+          paperType: t.paperType,
+          labelColumns: t.columns,
+          columnGapMm: t.columnGapMm,
+          copies: _copies,
+        );
+        if (!mounted) return;
+        if (msg.startsWith('✅')) {
+          Navigator.pop(context, true);
+          return;
+        }
+        setState(() {
+          _error = msg;
+          _sending = false;
+        });
+        return;
+      }
       await widget.api.printBarcodeLabel(
         widget.product.id,
         stationKey: _stationKey,
         copies: _copies,
+        barcodeHeightPx: barcodeHeightForLabelMm(t.cellWidthMm, t.heightMm),
+        sheetWidthMm: t.widthMm,
+        labelWidthMm: t.cellWidthMm,
+        labelHeightMm: t.heightMm,
+        gapMm: t.gapMm,
+        paperType: t.paperType,
+        labelColumns: t.columns,
+        columnGapMm: t.columnGapMm,
       );
       if (mounted) Navigator.pop(context, true);
     } catch (e) {
@@ -3217,101 +3302,215 @@ class _BarcodePrintDialogState extends State<_BarcodePrintDialog> {
 
   @override
   Widget build(BuildContext context) {
-    return AlertDialog(
-      title: Text('🖨 พิมพ์ barcode · ${widget.product.name}'),
-      content: SizedBox(
-        width: 320,
-        child: _loading
-            ? const Padding(
-                padding: EdgeInsets.all(20),
-                child: Center(child: CircularProgressIndicator()),
-              )
-            : Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Text(
-                    'Barcode: ${widget.product.barcode ?? '-'}',
-                    style: const TextStyle(color: Colors.grey),
-                  ),
-                  const SizedBox(height: 12),
-                  const Text(
-                    'เครื่องพิมพ์',
-                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
-                  ),
-                  const SizedBox(height: 4),
-                  DropdownButtonFormField<String?>(
-                    initialValue: _stationKey,
-                    decoration: const InputDecoration(
-                      isDense: true,
-                      border: OutlineInputBorder(),
-                    ),
-                    items: [
-                      const DropdownMenuItem<String?>(
-                        value: null,
-                        child: Text('(ค่าเริ่มต้นในระบบ)'),
-                      ),
-                      ..._stations.map((s) => DropdownMenuItem<String?>(
-                            value: s['key'] as String?,
-                            child: Text(
-                              '${s['name']} (${s['printer_key'] ?? s['printer_host'] ?? s['key']})',
-                              overflow: TextOverflow.ellipsis,
+    final maxH = MediaQuery.sizeOf(context).height * 0.9;
+    return Dialog(
+      insetPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 20),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: SafeArea(
+        child: ConstrainedBox(
+          constraints: BoxConstraints(maxWidth: 420, maxHeight: maxH),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 16, 12, 8),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'พิมพ์ barcode',
+                            style: const TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.w800,
                             ),
-                          )),
-                    ],
-                    onChanged: _sending
-                        ? null
-                        : (v) => setState(() => _stationKey = v),
-                  ),
-                  const SizedBox(height: 12),
-                  const Text(
-                    'จำนวน (1-8)',
-                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
-                  ),
-                  const SizedBox(height: 4),
-                  DropdownButtonFormField<int>(
-                    initialValue: _copies,
-                    decoration: const InputDecoration(
-                      isDense: true,
-                      border: OutlineInputBorder(),
+                          ),
+                          Text(
+                            widget.product.name,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: 13,
+                              color: Colors.grey[700],
+                            ),
+                          ),
+                          Text(
+                            widget.product.barcode ?? '-',
+                            style: const TextStyle(
+                              fontSize: 12,
+                              fontFamily: 'monospace',
+                              color: Colors.grey,
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
-                    items: const [1, 2, 3, 4, 5, 6, 8]
-                        .map((n) =>
-                            DropdownMenuItem<int>(value: n, child: Text('$n')))
-                        .toList(),
-                    onChanged: _sending
-                        ? null
-                        : (v) => setState(() => _copies = v ?? 1),
-                  ),
-                  if (_error != null) ...[
-                    const SizedBox(height: 8),
-                    Text(_error!,
-                        style: const TextStyle(color: Colors.red, fontSize: 12)),
+                    IconButton(
+                      onPressed: _sending
+                          ? null
+                          : () => Navigator.pop(context, false),
+                      icon: const Icon(Icons.close),
+                    ),
                   ],
-                ],
+                ),
               ),
-      ),
-      actions: [
-        TextButton(
-          onPressed: _sending ? null : () => Navigator.pop(context, false),
-          child: const Text('ยกเลิก'),
-        ),
-        ElevatedButton.icon(
-          onPressed: (_loading || _sending) ? null : _send,
-          icon: _sending
-              ? const SizedBox(
-                  width: 14,
-                  height: 14,
-                  child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-                )
-              : const Icon(Icons.receipt_long),
-          label: Text(_sending ? 'กำลังส่ง...' : '🧾 ส่งคิวพิมพ์'),
-          style: ElevatedButton.styleFrom(
-            backgroundColor: _kNavy,
-            foregroundColor: Colors.white,
+              const Divider(height: 1),
+              Flexible(
+                child: _loading
+                    ? const Padding(
+                        padding: EdgeInsets.all(32),
+                        child: Center(child: CircularProgressIndicator()),
+                      )
+                    : SingleChildScrollView(
+                        padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            BarcodeLabelTemplatePicker(
+                              key: _pickerKey,
+                              selected: _template,
+                              productName: widget.product.name,
+                              barcode: widget.product.barcode,
+                              price: widget.product.price,
+                              onChanged: _applyTemplate,
+                            ),
+                            const SizedBox(height: 16),
+                            const Text(
+                              'เครื่องพิมพ์',
+                              style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                fontSize: 13,
+                              ),
+                            ),
+                            const SizedBox(height: 6),
+                            DropdownButtonFormField<String?>(
+                              initialValue: _stationKey,
+                              decoration: const InputDecoration(
+                                isDense: true,
+                                border: OutlineInputBorder(),
+                                contentPadding: EdgeInsets.symmetric(
+                                  horizontal: 12,
+                                  vertical: 10,
+                                ),
+                              ),
+                              items: [
+                                const DropdownMenuItem<String?>(
+                                  value: null,
+                                  child: Text('(ค่าเริ่มต้นในระบบ)'),
+                                ),
+                                ..._stations.map(
+                                  (s) => DropdownMenuItem<String?>(
+                                    value: s['key'] as String?,
+                                    child: Text(
+                                      '${s['name']} (${s['printer_key'] ?? s['printer_host'] ?? s['key']})',
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                              onChanged: _sending
+                                  ? null
+                                  : (v) => setState(() => _stationKey = v),
+                            ),
+                            const SizedBox(height: 14),
+                            const Text(
+                              'จำนวน',
+                              style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                fontSize: 13,
+                              ),
+                            ),
+                            const SizedBox(height: 6),
+                            TextField(
+                              controller: _copiesCtrl,
+                              enabled: !_sending,
+                              keyboardType: TextInputType.number,
+                              decoration: const InputDecoration(
+                                isDense: true,
+                                border: OutlineInputBorder(),
+                                hintText: 'เช่น 50',
+                                contentPadding: EdgeInsets.symmetric(
+                                  horizontal: 12,
+                                  vertical: 10,
+                                ),
+                              ),
+                            ),
+                            if (_error != null) ...[
+                              const SizedBox(height: 12),
+                              Container(
+                                padding: const EdgeInsets.all(10),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFFFFEBEE),
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                child: Text(
+                                  _error!,
+                                  style: const TextStyle(
+                                    color: Colors.red,
+                                    fontSize: 12,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ],
+                        ),
+                      ),
+              ),
+              Container(
+                padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
+                decoration: BoxDecoration(
+                  color: Colors.grey[50],
+                  border: Border(top: BorderSide(color: Colors.grey[300]!)),
+                  borderRadius: const BorderRadius.vertical(
+                    bottom: Radius.circular(16),
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    TextButton(
+                      onPressed: _sending
+                          ? null
+                          : () => Navigator.pop(context, false),
+                      child: const Text('ยกเลิก'),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: FilledButton.icon(
+                        onPressed: (_loading || _sending) ? null : _send,
+                        icon: _sending
+                            ? const SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  color: Colors.white,
+                                ),
+                              )
+                            : const Icon(Icons.print, size: 20),
+                        label: Text(
+                          _sending
+                              ? 'กำลังส่ง…'
+                              : (context.watch<PosPrinterService>().hasPrinter
+                                    ? '🖨️ พิมพ์ Bluetooth'
+                                    : 'ส่งคิวพิมพ์'),
+                          style: const TextStyle(fontWeight: FontWeight.w700),
+                        ),
+                        style: FilledButton.styleFrom(
+                          backgroundColor: _kNavy,
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
           ),
         ),
-      ],
+      ),
     );
   }
 }

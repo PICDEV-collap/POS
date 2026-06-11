@@ -692,6 +692,13 @@ export default function StaffPage() {
           onClose={() => setShowQr(false)}
         />
       )}
+      {scannedPreview && (
+        <StaffScannedPreview
+          product={scannedPreview}
+          onCancel={() => setScannedPreview(null)}
+          onAdd={(qty, note) => confirmScannedAdd(scannedPreview, qty, note)}
+        />
+      )}
       {pickerProduct && (
         <StaffProductPicker
           product={pickerProduct}
@@ -703,6 +710,74 @@ export default function StaffPage() {
         />
       )}
     </main>
+  );
+}
+
+function StaffScannedPreview({ product, onCancel, onAdd }) {
+  const currency = '฿';
+  const [qty, setQty] = useState(1);
+  const hasOptions = (product.variants?.length || 0) > 0 || (product.options?.length || 0) > 0;
+  const unitPrice = Number(product.price || 0);
+  return (
+    <div onClick={onCancel}
+         style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.55)', zIndex: 99,
+                  display: 'flex', alignItems: 'flex-end' }}>
+      <div onClick={(e) => e.stopPropagation()}
+           style={{ background: 'white', width: '100%', maxWidth: 520, margin: '0 auto',
+                    borderRadius: '16px 16px 0 0', padding: 18, maxHeight: '80vh', overflowY: 'auto' }}>
+        <h3 style={{ margin: '0 0 8px', fontSize: 20, fontWeight: 800 }}>
+          {product.emoji || ''} {product.name}
+        </h3>
+        {product.description && (
+          <p style={{ margin: '0 0 10px', fontSize: 13, color: '#666' }}>{product.description}</p>
+        )}
+        {product.image_url && (
+          <img src={`${apiBase}${product.image_url}`} alt={product.name}
+               style={{ width: '100%', maxHeight: 140, objectFit: 'cover', borderRadius: 10,
+                        marginBottom: 10, background: '#f5f5f7' }} />
+        )}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+          <span style={{ fontSize: 22, fontWeight: 800, color: '#e85d04' }}>
+            {currency}{unitPrice.toFixed(0)}
+          </span>
+          {product.barcode && (
+            <code style={{ fontSize: 12, background: '#f0f0f5', padding: '4px 8px', borderRadius: 6 }}>
+              {product.barcode}
+            </code>
+          )}
+        </div>
+        {(product.track_stock || product.product_type === 'stock') && (
+          <div style={{ fontSize: 12, color: '#666', marginBottom: 10 }}>
+            สต๊อก: {Number(product.stock_qty || 0).toFixed(0)}
+          </div>
+        )}
+        {!hasOptions && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+            <span style={{ fontSize: 13, fontWeight: 700 }}>จำนวน</span>
+            <button type="button" onClick={() => setQty((q) => Math.max(1, q - 1))}
+                    style={{ width: 36, height: 36, borderRadius: 8, border: '1.5px solid #eee',
+                             background: 'white', fontWeight: 800, cursor: 'pointer' }}>−</button>
+            <span style={{ fontWeight: 800, minWidth: 24, textAlign: 'center' }}>{qty}</span>
+            <button type="button" onClick={() => setQty((q) => q + 1)}
+                    style={{ width: 36, height: 36, borderRadius: 8, border: '1.5px solid #eee',
+                             background: 'white', fontWeight: 800, cursor: 'pointer' }}>+</button>
+          </div>
+        )}
+        {hasOptions && (
+          <p style={{ fontSize: 12, color: '#888', marginBottom: 12 }}>มีตัวเลือก/ขนาด — กดเพิ่มเพื่อเลือก</p>
+        )}
+        <button type="button"
+                onClick={() => onAdd(hasOptions ? 1 : qty, '')}
+                style={{ width: '100%', padding: 14, border: 'none', borderRadius: 12,
+                         background: '#1a1a2e', color: 'white', fontWeight: 800, cursor: 'pointer' }}>
+          {hasOptions ? 'เพิ่ม (เลือกตัวเลือก)' : `เพิ่มลงตะกร้า · ${currency}${(unitPrice * qty).toFixed(0)}`}
+        </button>
+        <button type="button" onClick={onCancel}
+                style={{ width: '100%', padding: 10, border: 'none', background: 'transparent', color: '#888' }}>
+          ยกเลิก
+        </button>
+      </div>
+    </div>
   );
 }
 

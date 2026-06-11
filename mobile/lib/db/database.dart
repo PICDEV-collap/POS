@@ -36,7 +36,8 @@ class PendingActions extends Table {
   IntColumn get attempts => integer().withDefault(const Constant(0))();
   TextColumn get lastError => text().nullable()();
   DateTimeColumn get createdAt => dateTime().withDefault(currentDateAndTime)();
-  DateTimeColumn get nextAttemptAt => dateTime().withDefault(currentDateAndTime)();
+  DateTimeColumn get nextAttemptAt =>
+      dateTime().withDefault(currentDateAndTime)();
 }
 
 @DriftDatabase(tables: [CachedOrders, PendingActions])

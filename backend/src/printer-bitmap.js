@@ -8,6 +8,11 @@ const canvasLib = require('@napi-rs/canvas');
 const QRCode = require('qrcode');
 const { paymentQrMeta } = require('./lib/thaiQrPayment');
 const { CODE128_PATTERNS, code128BValues } = require('./lib/code128');
+const {
+  barcodeLabelTextScale,
+  barcodeRasterHeightPx,
+  isTinyBarcodeLabel,
+} = require('./lib/barcodeLabelScale');
 
 const ESC = 0x1b;
 const GS  = 0x1d;
@@ -28,6 +33,16 @@ function cutCommand(opts = {}, fallback = 'partial') {
   const mode = String(opts.cutMode || opts.cut_mode || fallback || 'partial').toLowerCase();
   if (mode === 'none') return Buffer.alloc(0);
   return mode === 'full' ? CUT_FULL : CUT_PARTIAL;
+}
+
+/** ESC/POS tail: continuous receipt rolls must not partial-cut (A70 gap sensor hunts). */
+function escposBitmapFooter(opts = {}, defaultCut = 'partial') {
+  const continuous = opts.paperType === 'continuous';
+  const cut = continuous ? 'none' : defaultCut;
+  const feedOpts = continuous
+    ? { ...opts, feedLines: Math.min(6, Math.max(2, Number(opts.feedLines) || 3)) }
+    : opts;
+  return Buffer.concat([feedLines(feedOpts), cutCommand({ ...opts, cutMode: cut }, defaultCut)]);
 }
 
 function bottomFeedPx(opts = {}) {
@@ -121,16 +136,25 @@ function barcodeRenderInfo(barcode, width, requestedHeightPx) {
     .join('')
     .split('')
     .reduce((sum, n) => sum + Number(n), 0);
-  const innerWidth = Math.max(width - 16, 100);
-  // pick module width so bars fit within the inner width including 10-module
-  // quiet zone on both sides
-  const moduleWidth = Math.max(
+  const tiny = width <= 168;
+  const sideMargin = tiny ? 2 : 8;
+  const innerWidth = tiny ? Math.max(width - sideMargin * 2, 48) : Math.max(width - 16, 100);
+  const quietModules = tiny ? 2 : 10;
+  let moduleWidth = Math.max(
     1,
-    Math.floor((innerWidth - 20) / moduleSum) || 1
+    Math.floor((innerWidth - quietModules * 2) / moduleSum) || 1,
   );
-  const quietPx = moduleWidth * 10;
-  const totalWidth = moduleSum * moduleWidth + quietPx * 2;
-  const barHeight = Math.max(40, Math.min(140, Number(requestedHeightPx) || 80));
+  let quietPx = moduleWidth * quietModules;
+  let totalWidth = moduleSum * moduleWidth + quietPx * 2;
+  if (totalWidth > width - 2) {
+    moduleWidth = Math.max(1, Math.floor((width - 4) / (moduleSum + quietModules * 2)) || 1);
+    quietPx = moduleWidth * quietModules;
+    totalWidth = moduleSum * moduleWidth + quietPx * 2;
+  }
+  const reqH = Number(requestedHeightPx) || (tiny ? 28 : 80);
+  const barHeight = tiny
+    ? Math.max(16, Math.min(reqH, 140))
+    : Math.max(40, Math.min(140, reqH));
   return { values, moduleWidth, quietPx, totalWidth, barHeight, totalHeight: barHeight };
 }
 
@@ -357,6 +381,121 @@ function rasterFromImageData(img, opts = {}) {
   return Buffer.concat(parts);
 }
 
+function parseGsV0BandAt(src, offset) {
+  if (offset > src.length - 8) return null;
+  if (src[offset] !== GS || src[offset + 1] !== 0x76 || src[offset + 2] !== 0x30) return null;
+  const widthBytes = src[offset + 4] + (src[offset + 5] << 8);
+  const height = src[offset + 6] + (src[offset + 7] << 8);
+  const total = 8 + widthBytes * height;
+  if (offset + total > src.length) return null;
+  return { widthBytes, height, total, band: src.subarray(offset, offset + total) };
+}
+
+/** Keep each GS v 0 band separate — AiYin BLE rejects one mega-raster. */
+function extractGsV0RastersConcat(buf) {
+  const src = Buffer.isBuffer(buf) ? buf : Buffer.from(buf);
+  const parts = [];
+  let i = 0;
+  while (i <= src.length - 8) {
+    const parsed = parseGsV0BandAt(src, i);
+    if (parsed) {
+      parts.push(parsed.band);
+      i += parsed.total;
+      continue;
+    }
+    i += 1;
+  }
+  return Buffer.concat(parts);
+}
+
+function splitGsV0BandBuffer(bandBuf, maxRows) {
+  const parsed = parseGsV0BandAt(bandBuf, 0);
+  if (!parsed) return [];
+  const { widthBytes, height, band } = parsed;
+  if (height <= maxRows) return [band];
+  const data = band.subarray(8);
+  const out = [];
+  for (let y = 0; y < height; y += maxRows) {
+    const h = Math.min(maxRows, height - y);
+    const chunk = data.subarray(y * widthBytes, (y + h) * widthBytes);
+    out.push(Buffer.concat([
+      Buffer.from([
+        GS, 0x76, 0x30, 0x00,
+        widthBytes & 0xff, (widthBytes >> 8) & 0xff,
+        h & 0xff, (h >> 8) & 0xff,
+      ]),
+      chunk,
+    ]));
+  }
+  return out;
+}
+
+function countGsV0Bands(buf) {
+  const src = Buffer.isBuffer(buf) ? buf : Buffer.from(buf);
+  let count = 0;
+  let i = 0;
+  while (i <= src.length - 8) {
+    const parsed = parseGsV0BandAt(src, i);
+    if (parsed) {
+      count += 1;
+      i += parsed.total;
+      continue;
+    }
+    i += 1;
+  }
+  return count;
+}
+
+/** Merge ESC/POS GS v 0 bands into one raster (TCP printers only). */
+function mergeGsV0Rasters(buf) {
+  const src = Buffer.isBuffer(buf) ? buf : Buffer.from(buf);
+  const bands = [];
+  let i = 0;
+  while (i <= src.length - 8) {
+    const parsed = parseGsV0BandAt(src, i);
+    if (parsed) {
+      bands.push({
+        widthBytes: parsed.widthBytes,
+        height: parsed.height,
+        data: parsed.band.subarray(8),
+      });
+      i += parsed.total;
+      continue;
+    }
+    i += 1;
+  }
+  if (!bands.length) return Buffer.alloc(0);
+  const widthBytes = bands[0].widthBytes;
+  const totalHeight = bands.reduce((sum, b) => sum + b.height, 0);
+  const merged = Buffer.concat(bands.map((b) => b.data));
+  return Buffer.concat([
+    Buffer.from([
+      GS, 0x76, 0x30, 0x00,
+      widthBytes & 0xff, (widthBytes >> 8) & 0xff,
+      totalHeight & 0xff, (totalHeight >> 8) & 0xff,
+    ]),
+    merged,
+  ]);
+}
+
+function toAiyinBleRaster(escposBuf, opts = {}) {
+  const maxRows = Number(opts.bleMaxRasterRows) || 128;
+  const src = extractGsV0RastersConcat(escposBuf);
+  if (!src.length) return Buffer.alloc(0);
+  const parts = [];
+  let i = 0;
+  while (i <= src.length - 8) {
+    const parsed = parseGsV0BandAt(src, i);
+    if (parsed) {
+      parts.push(...splitGsV0BandBuffer(parsed.band, maxRows));
+      i += parsed.total;
+      continue;
+    }
+    i += 1;
+  }
+  return Buffer.concat(parts);
+}
+
 // ─── Receipt builders ────────────────────────────────────────────────────
 function buildKitchenBitmap(order, opts = {}) {
   ensureFont(opts.fontPath);
@@ -390,7 +529,7 @@ function buildKitchenBitmap(order, opts = {}) {
   }
 
   const img = renderLines(lines, widthPx, { padTop: 8, padBottom: bottomFeedPx(opts) });
-  return Buffer.concat([INIT, ALIGN_L, rasterFromImageData(img, opts), feedLines(opts), cutCommand(opts, 'partial')]);
+  return Buffer.concat([INIT, ALIGN_L, rasterFromImageData(img, opts), escposBitmapFooter(opts, 'partial')]);
 }
 
 function buildReceiptBitmap(order, opts = {}) {
@@ -435,30 +574,121 @@ function buildReceiptBitmap(order, opts = {}) {
   lines.push({ text: 'Thank you', size: 18, align: 'center' });
 
   const img = renderLines(lines, widthPx, { padTop: 8, padBottom: bottomFeedPx(opts) });
-  return Buffer.concat([INIT, ALIGN_L, rasterFromImageData(img, opts), feedLines(opts), cutCommand(opts, 'full')]);
+  return Buffer.concat([INIT, ALIGN_L, rasterFromImageData(img, opts), escposBitmapFooter(opts, 'full')]);
 }
 
-function buildBarcodeLabelBitmap({
+function resolveBarcodeCellCfg(cfg = {}) {
+  const columns = Math.max(1, Math.min(6, Number(cfg.labelColumns) || 1));
+  const sheetMm = Number(cfg.paperWidthMm) || Number(cfg.labelWidthMm) || 58;
+  const sheetPx = sheetMm * 8;
+  const gapPx = Math.round((Number(cfg.columnGapMm) || 0) * 8);
+  const cellWidthPx = columns > 1
+    ? Math.max(96, Math.floor((sheetPx - (columns - 1) * gapPx) / columns))
+    : (cfg.widthPx || sheetPx);
+  return { ...cfg, widthPx: cellWidthPx, labelWidthMm: Math.round(cellWidthPx / 8) };
+}
+
+function barcodeLabelLines({
   barcode,
   name = '',
   price,
   stockQty,
   barcodeHeightPx,
-} = {}, opts = {}) {
-  ensureFont(opts.fontPath);
-  const widthPx = opts.widthPx || (opts.width >= 48 ? 576 : 384);
+} = {}, widthPx, cfg = {}) {
+  const cellWmm = cfg.labelWidthMm || Math.round((widthPx || 384) / 8);
+  const cellHmm = Number(cfg.labelHeightMm) || 0;
+  const tiny = isTinyBarcodeLabel(cellWmm, cellHmm);
+  const scale = barcodeLabelTextScale(cellWmm, cellHmm);
+  const titleSize = Math.max(8, Math.round((tiny ? 16 : 26) * scale));
+  const footerSize = Math.max(7, Math.round((tiny ? 12 : 18) * scale));
+  const barH = barcodeHeightPx
+    || barcodeRasterHeightPx(cellWmm, cellHmm, barcodeHeightPx);
   const lines = [];
-  if (name) {
-    lines.push({ text: name, size: 26, bold: true, align: 'center', wrap: true, maxWidth: widthPx - 12 });
+  if (name && !tiny) {
+    lines.push({
+      text: name,
+      size: titleSize,
+      bold: true,
+      align: 'center',
+      wrap: true,
+      maxWidth: widthPx - 12,
+    });
   }
-  lines.push({ barcode: String(barcode || ''), heightPx: barcodeHeightPx || 80, marginBottom: 4 });
-  const footerParts = [String(barcode || '')];
-  if (price != null) footerParts.push(`฿${Number(price).toFixed(0)}`);
-  if (stockQty != null) footerParts.push(`stock ${Number(stockQty).toFixed(0)}`);
-  lines.push({ text: footerParts.join(' · '), size: 18, align: 'center' });
+  lines.push({
+    barcode: String(barcode || ''),
+    heightPx: barH,
+    marginBottom: tiny ? 0 : 4,
+  });
+  if (!tiny) {
+    const footerParts = [String(barcode || '')];
+    if (price != null) footerParts.push(`฿${Number(price).toFixed(0)}`);
+    if (stockQty != null) footerParts.push(`stock ${Number(stockQty).toFixed(0)}`);
+    lines.push({ text: footerParts.join(' · '), size: footerSize, align: 'center' });
+  }
+  return lines;
+}
 
-  const img = renderLines(lines, widthPx, { padTop: 8, padBottom: bottomFeedPx(opts) });
-  return Buffer.concat([INIT, ALIGN_L, rasterFromImageData(img, opts), feedLines(opts), cutCommand(opts, 'partial')]);
+function renderBarcodeLabelImageData(opts, cfg) {
+  ensureFont(cfg.fontPath);
+  const cellCfg = resolveBarcodeCellCfg(cfg);
+  const widthPx = cellCfg.widthPx || 384;
+  const cellHmm = Number(cellCfg.labelHeightMm) || 0;
+  const cellWmm = cellCfg.labelWidthMm || Math.round(widthPx / 8);
+  const tiny = isTinyBarcodeLabel(cellWmm, cellHmm);
+  const lines = barcodeLabelLines(opts, widthPx, cellCfg);
+  return renderLines(lines, widthPx, {
+    padTop: tiny ? 2 : 8,
+    padBottom: tiny ? 2 : bottomFeedPx(cellCfg),
+  });
+}
+
+function buildBarcodeLabelRaw(opts = {}, cfg = {}) {
+  const cellCfg = resolveBarcodeCellCfg(cfg);
+  const img = renderBarcodeLabelImageData(opts, cellCfg);
+  return {
+    raw: rawBitmapFromImageData(img),
+    cellCfg,
+    heightPx: img.height,
+  };
+}
+
+function buildBarcodeLabelBitmap(opts = {}, cfg = {}) {
+  const columns = Math.max(1, Math.min(6, Number(cfg.labelColumns) || 1));
+  const itemsInRow = Math.min(columns, Math.max(1, Number(opts.itemsInRow) || 1));
+  const cellCfg = resolveBarcodeCellCfg(cfg);
+  const cellImg = renderBarcodeLabelImageData(opts, cellCfg);
+
+  if (itemsInRow <= 1) {
+    return Buffer.concat([
+      INIT,
+      ALIGN_L,
+      rasterFromImageData(cellImg, cellCfg),
+      escposBitmapFooter(cellCfg, 'partial'),
+    ]);
+  }
+
+  const gapPx = Math.round((Number(cfg.columnGapMm) || 0) * 8);
+  const sheetW = cellCfg.widthPx * itemsInRow + gapPx * (itemsInRow - 1);
+  const sheetH = cellImg.height;
+  const canvas = canvasLib.createCanvas(sheetW, sheetH);
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, sheetW, sheetH);
+  const cellCanvas = canvasLib.createCanvas(cellCfg.widthPx, sheetH);
+  cellCanvas.getContext('2d').putImageData(cellImg, 0, 0);
+  let x = 0;
+  for (let i = 0; i < itemsInRow; i += 1) {
+    ctx.drawImage(cellCanvas, x, 0);
+    x += cellCfg.widthPx + gapPx;
+  }
+  const sheetImg = ctx.getImageData(0, 0, sheetW, sheetH);
+  const rasterCfg = { ...cfg, widthPx: sheetW };
+  return Buffer.concat([
+    INIT,
+    ALIGN_L,
+    rasterFromImageData(sheetImg, rasterCfg),
+    escposBitmapFooter(cfg, 'partial'),
+  ]);
 }
 
 function buildQrLabelBitmap({
@@ -488,10 +718,29 @@ function buildQrLabelBitmap({
   if (footer) lines.push({ text: footer, size: 20, align: 'center' });
 
   const img = renderLines(lines, widthPx, { padTop: 8, padBottom: bottomFeedPx(opts) });
-  return Buffer.concat([INIT, ALIGN_L, rasterFromImageData(img, opts), feedLines(opts), cutCommand(opts, 'partial')]);
+  return Buffer.concat([INIT, ALIGN_L, rasterFromImageData(img, opts), escposBitmapFooter(opts, 'partial')]);
+}
+
+/** Tiny solid-black raster for AiYin BLE hardware checks (~1.2 KB). */
+function buildAiyinBlePingBitmap(opts = {}) {
+  const widthPx = opts.widthPx || 384;
+  const widthBytes = Math.ceil(widthPx / 8);
+  const rows = 32;
+  const data = Buffer.alloc(widthBytes * rows, 0xff);
+  return Buffer.concat([
+    Buffer.from([
+      GS, 0x76, 0x30, 0x00,
+      widthBytes & 0xff, (widthBytes >> 8) & 0xff,
+      rows & 0xff, (rows >> 8) & 0xff,
+    ]),
+    data,
+  ]);
 }
 
 function buildTestBitmap(opts = {}) {
+  if (opts.bleProfile === 'aiyin') {
+    return buildAiyinBlePingBitmap(opts);
+  }
   ensureFont(opts.fontPath);
   const widthPx = opts.widthPx || 384;
   const lines = [
@@ -503,7 +752,12 @@ function buildTestBitmap(opts = {}) {
     { rule: '-', size: 20 },
   ];
   const img = renderLines(lines, widthPx, { padTop: 8, padBottom: bottomFeedPx(opts) });
-  return Buffer.concat([INIT, ALIGN_L, rasterFromImageData(img, opts), feedLines(opts), cutCommand(opts, 'partial')]);
+  return Buffer.concat([
+    INIT,
+    ALIGN_L,
+    rasterFromImageData(img, opts),
+    escposBitmapFooter(opts, 'partial'),
+  ]);
 }
 
 module.exports = {
@@ -511,7 +765,14 @@ module.exports = {
   buildReceiptBitmap,
   buildQrLabelBitmap,
   buildBarcodeLabelBitmap,
+  buildBarcodeLabelRaw,
+  resolveBarcodeCellCfg,
   buildTestBitmap,
+  buildAiyinBlePingBitmap,
+  mergeGsV0Rasters,
+  extractGsV0RastersConcat,
+  countGsV0Bands,
+  toAiyinBleRaster,
   rasterFromImageData,
   rawBitmapFromImageData,
   renderLines,

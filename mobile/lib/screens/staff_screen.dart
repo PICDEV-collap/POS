@@ -11,7 +11,7 @@ import '../services/api_service.dart';
 import '../services/auth_service.dart';
 import '../services/socket_service.dart';
 import '../services/print_helper.dart';
-import '../services/bluetooth_printer_service.dart';
+import '../services/pos_printer_service.dart';
 import 'admin_login_screen.dart';
 import 'barcode_scanner_screen.dart';
 import 'bluetooth_printer_settings.dart';
@@ -87,6 +87,7 @@ class _StaffScreenState extends State<StaffScreen> with WidgetsBindingObserver {
   bool _reloadOrdersAgain = false;
   String _scanCode = '';
   bool _scanBusy = false;
+  Product? _scannedPreview;
   bool _qrPrintBusy = false;
   final Set<int> _availBusyIds = <int>{};
   final TextEditingController _scanController = TextEditingController();
@@ -290,9 +291,11 @@ class _StaffScreenState extends State<StaffScreen> with WidgetsBindingObserver {
       });
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(nextAvail
-              ? '${p.name} — เปิดขายแล้ว'
-              : '${p.name} — ปิดขาย (ของหมด)'),
+          content: Text(
+            nextAvail
+                ? '${p.name} — เปิดขายแล้ว'
+                : '${p.name} — ปิดขาย (ของหมด)',
+          ),
           duration: const Duration(seconds: 2),
         ),
       );
@@ -310,7 +313,7 @@ class _StaffScreenState extends State<StaffScreen> with WidgetsBindingObserver {
     }
   }
 
-  Future<void> _addScannedProduct() async {
+  Future<void> _lookupScannedProduct() async {
     final code = _scanCode.trim();
     if (code.isEmpty || _scanBusy) return;
     setState(() {
@@ -329,13 +332,32 @@ class _StaffScreenState extends State<StaffScreen> with WidgetsBindingObserver {
       }
       if (!mounted) return;
       _scanController.clear();
-      setState(() => _scanCode = '');
-      await _addToCart(product);
+      setState(() {
+        _scanCode = '';
+        _scannedPreview = product;
+      });
     } catch (e) {
       if (mounted) setState(() => _err = e.toString());
     } finally {
       if (mounted) setState(() => _scanBusy = false);
     }
+  }
+
+  Future<void> _confirmScannedAdd(Product product) async {
+    final hasVariants = (product.variants?.isNotEmpty ?? false);
+    final hasOptions = (product.options?.isNotEmpty ?? false);
+    setState(() => _scannedPreview = null);
+    if (hasVariants || hasOptions) {
+      await _addToCart(product);
+      return;
+    }
+    final newItem = _CartItem(product: product, qty: 1, note: '');
+    setState(() {
+      final cur = _cart[newItem.key];
+      _cart[newItem.key] = cur == null
+          ? newItem
+          : cur.copyWith(qty: cur.qty + 1);
+    });
   }
 
   Future<void> _openBarcodeScanner() async {
@@ -359,7 +381,7 @@ class _StaffScreenState extends State<StaffScreen> with WidgetsBindingObserver {
     if (!mounted || code == null || code.trim().isEmpty) return;
     _scanController.text = code.trim();
     setState(() => _scanCode = code.trim());
-    await _addScannedProduct();
+    await _lookupScannedProduct();
   }
 
   void _setQty(String key, int qty) {
@@ -679,162 +701,178 @@ class _StaffScreenState extends State<StaffScreen> with WidgetsBindingObserver {
     final isLan = _isLanLikeUrl(base);
     if (!mounted) return;
     final role = context.read<AuthService>().user?.role;
-    final canPrint = role == 'admin' || role == 'super_admin' || role == 'staff';
+    final canPrint =
+        role == 'admin' || role == 'super_admin' || role == 'staff';
     showDialog(
       context: context,
       builder: (dialogCtx) => StatefulBuilder(
         builder: (ctx, setDialogState) {
           var printing = _qrPrintBusy;
           return Dialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
-        child: Padding(
-          padding: const EdgeInsets.all(20),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                table.isTakeaway
-                    ? '📱 QR สั่งกลับบ้าน'
-                    : '📱 ให้ลูกค้าสแกนเพื่อสั่งอาหาร',
-                style: const TextStyle(fontSize: 13, color: Colors.grey),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                table.name,
-                style: const TextStyle(
-                  fontSize: 22,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-              const SizedBox(height: 14),
-              Image.network(
-                _api.qrUrl(url, size: 480),
-                headers: AppConfig.tunnelHeaders,
-                width: 280,
-                height: 280,
-                fit: BoxFit.contain,
-                errorBuilder: (_, __, ___) =>
-                    const Icon(Icons.qr_code_2, size: 200),
-              ),
-              const SizedBox(height: 10),
-              SelectableText(
-                url,
-                style: const TextStyle(fontSize: 11, color: Colors.grey),
-                textAlign: TextAlign.center,
-              ),
-              if (wifiOnly && isLan) ...[
-                const SizedBox(height: 10),
-                Container(
-                  padding: const EdgeInsets.all(8),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFE8F5E9),
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: const Text(
-                    'โหมด WiFi ร้าน: ลูกค้าต้องต่อ WiFi ร้านก่อนสแกน QR นี้',
-                    style: TextStyle(fontSize: 11, color: Color(0xFF1F6F43)),
-                  ),
-                ),
-              ] else if (isLan) ...[
-                const SizedBox(height: 10),
-                Container(
-                  padding: const EdgeInsets.all(8),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFFFF5CC),
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: const Text(
-                    '⚠️ URL นี้เป็น LAN — ลูกค้าใช้เน็ตตัวเองสแกนไม่ได้\n'
-                    'ตั้ง PUBLIC_BASE_URL ใน backend/.env (Caddy domain หรือ ngrok URL)',
-                    style: TextStyle(fontSize: 11, color: Color(0xFF8A6500)),
-                  ),
-                ),
-              ],
-              const SizedBox(height: 14),
-              Wrap(
-                alignment: WrapAlignment.end,
-                spacing: 8,
-                runSpacing: 8,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(18),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.all(20),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
                 children: [
-                  TextButton.icon(
-                    icon: const Icon(Icons.open_in_new),
-                    label: const Text('เปิดใน browser'),
-                    onPressed: () async {
-                      await launchUrl(
-                        Uri.parse(url),
-                        mode: LaunchMode.externalApplication,
-                      );
-                    },
+                  Text(
+                    table.isTakeaway
+                        ? '📱 QR สั่งกลับบ้าน'
+                        : '📱 ให้ลูกค้าสแกนเพื่อสั่งอาหาร',
+                    style: const TextStyle(fontSize: 13, color: Colors.grey),
                   ),
-                  if (canPrint)
-                    ElevatedButton.icon(
-                      icon: printing
-                          ? const SizedBox(
-                              width: 16,
-                              height: 16,
-                              child: CircularProgressIndicator(
-                                strokeWidth: 2,
-                                color: Colors.white,
-                              ),
-                            )
-                          : const Icon(Icons.receipt_long),
-                      label: Text(printing ? 'กำลังส่ง…' : '🧾 พิมพ์ QR'),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: _kNavy,
-                        foregroundColor: Colors.white,
+                  const SizedBox(height: 4),
+                  Text(
+                    table.name,
+                    style: const TextStyle(
+                      fontSize: 22,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  Image.network(
+                    _api.qrUrl(url, size: 480),
+                    headers: AppConfig.tunnelHeaders,
+                    width: 280,
+                    height: 280,
+                    fit: BoxFit.contain,
+                    errorBuilder: (_, __, ___) =>
+                        const Icon(Icons.qr_code_2, size: 200),
+                  ),
+                  const SizedBox(height: 10),
+                  SelectableText(
+                    url,
+                    style: const TextStyle(fontSize: 11, color: Colors.grey),
+                    textAlign: TextAlign.center,
+                  ),
+                  if (wifiOnly && isLan) ...[
+                    const SizedBox(height: 10),
+                    Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFE8F5E9),
+                        borderRadius: BorderRadius.circular(8),
                       ),
-                      onPressed: printing
-                          ? null
-                          : () async {
-                              if (_qrPrintBusy) return; // double-tap guard
-                              setState(() => _qrPrintBusy = true);
-                              setDialogState(() {});
-                              try {
-                                await _api.printQrLabel(
-                                  url: url,
-                                  tableName: table.name,
-                                  tableCode: table.code,
-                                );
-                                if (mounted) {
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    SnackBar(
-                                      content: Text(
-                                        'ส่งคิวพิมพ์ QR "${table.name}" แล้ว',
-                                      ),
-                                    ),
-                                  );
-                                }
-                              } catch (e) {
-                                if (mounted) {
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    SnackBar(
-                                      content: Text('พิมพ์ไม่สำเร็จ: $e'),
-                                      backgroundColor: Colors.red,
-                                    ),
-                                  );
-                                }
-                              } finally {
-                                if (mounted) {
-                                  setState(() => _qrPrintBusy = false);
-                                }
-                                if (ctx.mounted) setDialogState(() {});
-                              }
-                            },
+                      child: const Text(
+                        'โหมด WiFi ร้าน: ลูกค้าต้องต่อ WiFi ร้านก่อนสแกน QR นี้',
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: Color(0xFF1F6F43),
+                        ),
+                      ),
                     ),
-                  ElevatedButton(
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.grey.shade200,
-                      foregroundColor: Colors.black87,
+                  ] else if (isLan) ...[
+                    const SizedBox(height: 10),
+                    Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFFFF5CC),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: const Text(
+                        '⚠️ URL นี้เป็น LAN — ลูกค้าใช้เน็ตตัวเองสแกนไม่ได้\n'
+                        'ตั้ง PUBLIC_BASE_URL ใน backend/.env (Caddy domain หรือ ngrok URL)',
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: Color(0xFF8A6500),
+                        ),
+                      ),
                     ),
-                    onPressed: () => Navigator.pop(dialogCtx),
-                    child: const Text('ปิด'),
+                  ],
+                  const SizedBox(height: 14),
+                  Wrap(
+                    alignment: WrapAlignment.end,
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      TextButton.icon(
+                        icon: const Icon(Icons.open_in_new),
+                        label: const Text('เปิดใน browser'),
+                        onPressed: () async {
+                          await launchUrl(
+                            Uri.parse(url),
+                            mode: LaunchMode.externalApplication,
+                          );
+                        },
+                      ),
+                      if (canPrint)
+                        ElevatedButton.icon(
+                          icon: printing
+                              ? const SizedBox(
+                                  width: 16,
+                                  height: 16,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    color: Colors.white,
+                                  ),
+                                )
+                              : const Icon(Icons.receipt_long),
+                          label: Text(printing ? 'กำลังส่ง…' : '🧾 พิมพ์ QR'),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: _kNavy,
+                            foregroundColor: Colors.white,
+                          ),
+                          onPressed: printing
+                              ? null
+                              : () async {
+                                  if (_qrPrintBusy) return; // double-tap guard
+                                  setState(() => _qrPrintBusy = true);
+                                  setDialogState(() {});
+                                  try {
+                                    final msg = await printQrLabel(
+                                      context: context,
+                                      api: _api,
+                                      url: url,
+                                      tableName: table.name,
+                                      tableCode: table.code,
+                                    );
+                                    if (mounted) {
+                                      ScaffoldMessenger.of(
+                                        context,
+                                      ).showSnackBar(
+                                        SnackBar(
+                                          content: Text(msg),
+                                          backgroundColor: msg.startsWith('✅')
+                                              ? null
+                                              : Colors.red,
+                                        ),
+                                      );
+                                    }
+                                  } catch (e) {
+                                    if (mounted) {
+                                      ScaffoldMessenger.of(
+                                        context,
+                                      ).showSnackBar(
+                                        SnackBar(
+                                          content: Text('พิมพ์ไม่สำเร็จ: $e'),
+                                          backgroundColor: Colors.red,
+                                        ),
+                                      );
+                                    }
+                                  } finally {
+                                    if (mounted) {
+                                      setState(() => _qrPrintBusy = false);
+                                    }
+                                    if (ctx.mounted) setDialogState(() {});
+                                  }
+                                },
+                        ),
+                      ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.grey.shade200,
+                          foregroundColor: Colors.black87,
+                        ),
+                        onPressed: () => Navigator.pop(dialogCtx),
+                        child: const Text('ปิด'),
+                      ),
+                    ],
                   ),
                 ],
               ),
-            ],
-          ),
-        ),
-      );
+            ),
+          );
         },
       ),
     );
@@ -956,54 +994,67 @@ class _StaffScreenState extends State<StaffScreen> with WidgetsBindingObserver {
       onPopInvokedWithResult: (didPop, _) {
         if (!didPop) unawaited(_handleBack());
       },
-      child: Scaffold(
-        appBar: AppBar(
-          title: Text(
-            'Staff · ${auth.user?.fullName ?? auth.user?.username ?? ""}',
-          ),
-          backgroundColor: _kNavy,
-          foregroundColor: Colors.white,
-          leading: IconButton(
-            tooltip: _selectedTable == null
-                ? 'กลับหน้า Login'
-                : 'กลับไปเลือกโต๊ะ',
-            icon: const Icon(Icons.arrow_back),
-            onPressed: () => unawaited(_handleBack()),
-          ),
-          actions: [
-            IconButton(
-              tooltip: 'ตั้งค่าเครื่องพิมพ์',
-              icon: Icon(
-                Icons.print,
-                color: context.watch<BluetoothPrinterService>().hasPrinter
-                    ? const Color(0xFF06D6A0)
-                    : Colors.white70,
+      child: Stack(
+        children: [
+          Scaffold(
+            appBar: AppBar(
+              title: Text(
+                'Staff · ${auth.user?.fullName ?? auth.user?.username ?? ""}',
               ),
-              onPressed: () => Navigator.of(context).push(
-                MaterialPageRoute(
-                  builder: (_) =>
-                      BluetoothPrinterSettings(api: _api, wrapInScaffold: true),
+              backgroundColor: _kNavy,
+              foregroundColor: Colors.white,
+              leading: IconButton(
+                tooltip: _selectedTable == null
+                    ? 'กลับหน้า Login'
+                    : 'กลับไปเลือกโต๊ะ',
+                icon: const Icon(Icons.arrow_back),
+                onPressed: () => unawaited(_handleBack()),
+              ),
+              actions: [
+                IconButton(
+                  tooltip: 'ตั้งค่าเครื่องพิมพ์',
+                  icon: Icon(
+                    Icons.print,
+                    color: context.watch<PosPrinterService>().hasPrinter
+                        ? const Color(0xFF06D6A0)
+                        : Colors.white70,
+                  ),
+                  onPressed: () => Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => BluetoothPrinterSettings(
+                        api: _api,
+                        wrapInScaffold: true,
+                      ),
+                    ),
+                  ),
                 ),
-              ),
+                IconButton(
+                  tooltip: 'admin / kitchen login',
+                  onPressed: _openAdminLogin,
+                  icon: const Icon(Icons.admin_panel_settings),
+                ),
+                IconButton(
+                  tooltip: 'web staff',
+                  onPressed: _openWebStaff,
+                  icon: const Icon(Icons.open_in_browser),
+                ),
+              ],
             ),
-            IconButton(
-              tooltip: 'admin / kitchen login',
-              onPressed: _openAdminLogin,
-              icon: const Icon(Icons.admin_panel_settings),
+            body: _selectedTable == null
+                ? _buildTableList()
+                : _buildOrderingView(selectedTableOrders, categoryProducts),
+            bottomSheet: (_selectedTable != null && _cart.isNotEmpty)
+                ? _buildCartBar(cartCount, cartTotal)
+                : null,
+          ),
+          if (_scannedPreview != null)
+            _ScannedPreviewSheet(
+              product: _scannedPreview!,
+              apiBase: AppConfig.apiBase,
+              onCancel: () => setState(() => _scannedPreview = null),
+              onAdd: () => _confirmScannedAdd(_scannedPreview!),
             ),
-            IconButton(
-              tooltip: 'web staff',
-              onPressed: _openWebStaff,
-              icon: const Icon(Icons.open_in_browser),
-            ),
-          ],
-        ),
-        body: _selectedTable == null
-            ? _buildTableList()
-            : _buildOrderingView(selectedTableOrders, categoryProducts),
-        bottomSheet: (_selectedTable != null && _cart.isNotEmpty)
-            ? _buildCartBar(cartCount, cartTotal)
-            : null,
+        ],
       ),
     );
   }
@@ -1201,7 +1252,7 @@ class _StaffScreenState extends State<StaffScreen> with WidgetsBindingObserver {
                   textInputAction: TextInputAction.done,
                   controller: _scanController,
                   onChanged: (v) => setState(() => _scanCode = v),
-                  onSubmitted: (_) => _addScannedProduct(),
+                  onSubmitted: (_) => _lookupScannedProduct(),
                 ),
               ),
               const SizedBox(width: 8),
@@ -1218,7 +1269,7 @@ class _StaffScreenState extends State<StaffScreen> with WidgetsBindingObserver {
               ElevatedButton(
                 onPressed: _scanBusy || _scanCode.trim().isEmpty
                     ? null
-                    : _addScannedProduct,
+                    : _lookupScannedProduct,
                 style: ElevatedButton.styleFrom(
                   backgroundColor: _kNavy,
                   foregroundColor: Colors.white,
@@ -1286,7 +1337,8 @@ class _StaffScreenState extends State<StaffScreen> with WidgetsBindingObserver {
                               child: Column(
                                 crossAxisAlignment: CrossAxisAlignment.stretch,
                                 children: [
-                                  if (p.imageUrl != null && p.imageUrl!.isNotEmpty)
+                                  if (p.imageUrl != null &&
+                                      p.imageUrl!.isNotEmpty)
                                     SizedBox(
                                       height: 60,
                                       child: Image.network(
@@ -1325,7 +1377,8 @@ class _StaffScreenState extends State<StaffScreen> with WidgetsBindingObserver {
                                     ),
                                   const Spacer(),
                                   Row(
-                                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                    mainAxisAlignment:
+                                        MainAxisAlignment.spaceBetween,
                                     children: [
                                       Text(
                                         '฿${p.price.toStringAsFixed(0)}',
@@ -1349,12 +1402,14 @@ class _StaffScreenState extends State<StaffScreen> with WidgetsBindingObserver {
                                           children: [
                                             _qtyBtn(
                                               '−',
-                                              () => _setQty(simpleKey!, qty - 1),
+                                              () =>
+                                                  _setQty(simpleKey!, qty - 1),
                                             ),
                                             Padding(
-                                              padding: const EdgeInsets.symmetric(
-                                                horizontal: 6,
-                                              ),
+                                              padding:
+                                                  const EdgeInsets.symmetric(
+                                                    horizontal: 6,
+                                                  ),
                                               child: Text(
                                                 '$qty',
                                                 style: const TextStyle(
@@ -1414,8 +1469,8 @@ class _StaffScreenState extends State<StaffScreen> with WidgetsBindingObserver {
                                         busy
                                             ? '...'
                                             : (p.isAvailable
-                                                ? '🛑 ปิดขาย'
-                                                : '✓ เปิดขาย'),
+                                                  ? '🛑 ปิดขาย'
+                                                  : '✓ เปิดขาย'),
                                         style: const TextStyle(
                                           fontSize: 11,
                                           fontWeight: FontWeight.bold,
@@ -1550,6 +1605,157 @@ class _StaffScreenState extends State<StaffScreen> with WidgetsBindingObserver {
               ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ScannedPreviewSheet extends StatelessWidget {
+  final Product product;
+  final String apiBase;
+  final VoidCallback onCancel;
+  final VoidCallback onAdd;
+
+  const _ScannedPreviewSheet({
+    required this.product,
+    required this.apiBase,
+    required this.onCancel,
+    required this.onAdd,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final hasOptions =
+        (product.variants?.isNotEmpty ?? false) ||
+        (product.options?.isNotEmpty ?? false);
+    final img = product.imageUrl;
+    return Positioned.fill(
+      child: GestureDetector(
+        onTap: onCancel,
+        child: ColoredBox(
+          color: Colors.black54,
+          child: GestureDetector(
+            onTap: () {},
+            child: Align(
+              alignment: Alignment.bottomCenter,
+              child: Material(
+                color: Colors.white,
+                borderRadius: const BorderRadius.vertical(
+                  top: Radius.circular(16),
+                ),
+                child: SafeArea(
+                  top: false,
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(18, 16, 18, 18),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Text(
+                          '${product.emoji ?? ''} ${product.name}'.trim(),
+                          style: const TextStyle(
+                            fontSize: 20,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                        if (product.description != null &&
+                            product.description!.isNotEmpty) ...[
+                          const SizedBox(height: 6),
+                          Text(
+                            product.description!,
+                            style: TextStyle(
+                              fontSize: 13,
+                              color: Colors.grey[700],
+                            ),
+                          ),
+                        ],
+                        if (img != null && img.isNotEmpty) ...[
+                          const SizedBox(height: 10),
+                          ClipRRect(
+                            borderRadius: BorderRadius.circular(10),
+                            child: Image.network(
+                              '$apiBase$img',
+                              height: 120,
+                              width: double.infinity,
+                              fit: BoxFit.cover,
+                              errorBuilder: (_, __, ___) =>
+                                  const SizedBox.shrink(),
+                            ),
+                          ),
+                        ],
+                        const SizedBox(height: 10),
+                        Row(
+                          children: [
+                            Text(
+                              '฿${product.price.toStringAsFixed(0)}',
+                              style: const TextStyle(
+                                fontSize: 22,
+                                fontWeight: FontWeight.w800,
+                                color: _kOrange,
+                              ),
+                            ),
+                            const Spacer(),
+                            if (product.barcode != null &&
+                                product.barcode!.isNotEmpty)
+                              Text(
+                                product.barcode!,
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: Colors.grey[600],
+                                  fontFamily: 'monospace',
+                                ),
+                              ),
+                          ],
+                        ),
+                        if (product.trackStock ||
+                            product.productType == 'stock')
+                          Padding(
+                            padding: const EdgeInsets.only(top: 6),
+                            child: Text(
+                              'สต๊อก: ${product.stockQty.toStringAsFixed(0)}',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: Colors.grey[700],
+                              ),
+                            ),
+                          ),
+                        if (hasOptions)
+                          const Padding(
+                            padding: EdgeInsets.only(top: 8),
+                            child: Text(
+                              'มีตัวเลือก/ขนาด — กดเพิ่มเพื่อเลือก',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: Colors.grey,
+                              ),
+                            ),
+                          ),
+                        const SizedBox(height: 14),
+                        FilledButton(
+                          onPressed: onAdd,
+                          style: FilledButton.styleFrom(
+                            backgroundColor: _kNavy,
+                            padding: const EdgeInsets.symmetric(vertical: 14),
+                          ),
+                          child: Text(
+                            hasOptions
+                                ? 'เพิ่ม (เลือกตัวเลือก)'
+                                : 'เพิ่มลงตะกร้า · ฿${product.price.toStringAsFixed(0)}',
+                            style: const TextStyle(fontWeight: FontWeight.w800),
+                          ),
+                        ),
+                        TextButton(
+                          onPressed: onCancel,
+                          child: const Text('ยกเลิก'),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
         ),
       ),
     );

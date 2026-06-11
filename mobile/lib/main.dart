@@ -7,6 +7,7 @@ import 'services/socket_service.dart';
 import 'services/api_service.dart';
 import 'services/offline_repository.dart';
 import 'services/bluetooth_printer_service.dart';
+import 'services/pos_printer_service.dart';
 import 'services/auto_print_service.dart';
 import 'screens/kitchen_screen.dart';
 import 'screens/staff_screen.dart';
@@ -24,20 +25,20 @@ Future<void> main() async {
   final db = AppDatabase();
   final api = ApiService(auth);
   final offline = OfflineRepository(api: api, db: db);
-  final btPrinter = BluetoothPrinterService();
-  await btPrinter.bootstrap();
+  final posPrinter = PosPrinterService(bluetooth: BluetoothPrinterService());
+  await posPrinter.bootstrap();
   final autoPrint = AutoPrintService(
     api: api,
     auth: auth,
     socket: socket,
-    printer: btPrinter,
+    printer: posPrinter,
   );
   runApp(
     MyApp(
       auth: auth,
       socket: socket,
       offline: offline,
-      btPrinter: btPrinter,
+      posPrinter: posPrinter,
       autoPrint: autoPrint,
     ),
   );
@@ -47,14 +48,14 @@ class MyApp extends StatelessWidget {
   final AuthService auth;
   final SocketService socket;
   final OfflineRepository offline;
-  final BluetoothPrinterService btPrinter;
+  final PosPrinterService posPrinter;
   final AutoPrintService autoPrint;
   const MyApp({
     super.key,
     required this.auth,
     required this.socket,
     required this.offline,
-    required this.btPrinter,
+    required this.posPrinter,
     required this.autoPrint,
   });
 
@@ -65,7 +66,7 @@ class MyApp extends StatelessWidget {
         ChangeNotifierProvider.value(value: auth),
         ChangeNotifierProvider.value(value: socket),
         ChangeNotifierProvider.value(value: offline),
-        ChangeNotifierProvider.value(value: btPrinter),
+        ChangeNotifierProvider.value(value: posPrinter),
         Provider<AutoPrintService>.value(value: autoPrint),
       ],
       child: MaterialApp(
