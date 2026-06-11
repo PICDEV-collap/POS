@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<service>
+  <id>pos-v2-web</id>
+  <name>POS V2 — Web (Next.js)</name>
+  <description>POS_V2 customer/staff/kitchen/admin web UI</description>
+
+  <executable>C:\Program Files\nodejs\node.exe</executable>
+  <arguments>node_modules\next\dist\bin\next start -p 3000</arguments>
+  <workingdirectory>D:\POS_V2\customer-web</workingdirectory>
+
+  <env name="NODE_ENV" value="production"/>
+
+  <onfailure action="restart" delay="3 sec"/>
+  <onfailure action="restart" delay="10 sec"/>
+  <onfailure action="restart" delay="30 sec"/>
+  <resetfailure>1 hour</resetfailure>
+
+  <log mode="roll-by-size">
+    <sizeThreshold>10240</sizeThreshold>
+    <keepFiles>5</keepFiles>
+  </log>
+  <logpath>D:\POS_V2\customer-web\logs</logpath>
+
+  <startmode>Automatic</startmode>
+  <delayedAutoStart>true</delayedAutoStart>
+</service>

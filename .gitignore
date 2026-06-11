@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Logs
 logs
 *.log
@@ -141,3 +142,82 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+=======
+# POS_V2 repository hygiene
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+dist/
+coverage/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Flutter / Android build outputs
+mobile/.dart_tool/
+mobile/.flutter-plugins
+mobile/.flutter-plugins-dependencies
+mobile/build/
+mobile/android/.gradle/
+mobile/android/app/build/
+mobile/ios/Flutter/.last_build_id
+
+# Generated release binaries and local artifacts
+*.apk
+*.aab
+artifacts/
+deploy/mobile/
+
+# Runtime logs and crash dumps
+*.log
+logs/
+backend/logs/
+customer-web/logs/
+deploy/logs/
+hs_err_pid*.log
+
+# Environment and secret files
+.env
+.env.*
+!.env.example
+backend/.env
+backend/.env.*
+!backend/.env.example
+customer-web/.env.local
+customer-web/.env.production.local
+customer-web/.env.development.local
+!customer-web/.env.example
+deploy/ngrok.yml
+
+# Local database / backups
+*.sqlite
+*.sqlite3
+*.db
+*.db-shm
+*.db-wal
+*.bak
+*.backup
+database/backups/
+
+# Local tools and downloaded installers
+tools/
+*.zip
+*.msi
+*.exe
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+
+# Field photos / screenshots kept outside source control
+/*.jpg
+/*.jpeg
+/*.png
+/*.webp
+artifacts/field-photos/
+>>>>>>> 254fe99 (Initial POS V2 project import)

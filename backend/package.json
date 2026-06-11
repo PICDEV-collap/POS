@@ -1,0 +1,40 @@
+{
+  "name": "pos-v2-backend",
+  "version": "0.1.0",
+  "description": "POS_V2 backend API (Express + PostgreSQL + Socket.io)",
+  "private": true,
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "db:init": "node scripts/db-init.js",
+    "db:seed": "node scripts/db-seed.js",
+    "db:migrate": "node scripts/migrate.js",
+    "db:reset": "node scripts/db-init.js && node scripts/db-seed.js",
+    "create-admin": "node scripts/create-admin.js",
+    "rotate-secrets": "node scripts/rotate-secrets.js"
+  },
+  "dependencies": {
+    "@napi-rs/canvas": "^1.0.0",
+    "bcrypt": "^5.1.1",
+    "bonjour-service": "^1.3.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "express-async-errors": "^3.1.1",
+    "express-rate-limit": "^8.5.1",
+    "helmet": "^8.1.0",
+    "iconv-lite": "^0.7.2",
+    "jimp": "^1.6.1",
+    "jsonwebtoken": "^9.0.2",
+    "morgan": "^1.10.0",
+    "multer": "^2.1.1",
+    "pg": "^8.12.0",
+    "qrcode": "^1.5.4",
+    "socket.io": "^4.7.5",
+    "web-push": "^3.6.7"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

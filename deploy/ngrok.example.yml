@@ -1,0 +1,9 @@
+version: "3"
+agent:
+  authtoken: "<your-ngrok-authtoken>"
+tunnels:
+  pos-v2:
+    proto: http
+    addr: 3000
+    domain: "<your-static-domain>.ngrok-free.dev"
+    inspect: false

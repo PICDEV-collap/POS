@@ -1,0 +1,74 @@
+# Caddy reverse proxy with automatic HTTPS for POS_V2
+#
+# Usage:
+#   1. Install Caddy: https://caddyserver.com/download (Windows binary)
+#   2. Edit the domain below to your real one
+#   3. Run as Administrator (port 80/443 require admin):
+#        caddy run --config Caddyfile
+#      OR install as Windows service via:
+#        caddy run --config Caddyfile --watch    (development)
+#        nssm install Caddy "C:\caddy\caddy.exe" "run --config C:\caddy\Caddyfile"
+#   4. AFTER Caddy is up, set the public domain in backend/.env so admin QRs
+#      point at it:
+#        PUBLIC_BASE_URL=https://your-domain.com
+#      restart the backend, then admin → QR tab will default to that domain.
+#
+# For LAN-only (no public domain), comment out the {your-domain} blocks and
+# use the IP-based block at the bottom (TLS via internal CA).
+
+{
+    # Caddy global options
+    email admin@your-domain.com
+    # Uncomment for staging certs while testing:
+    # acme_ca https://acme-staging-v02.api.letsencrypt.org/directory
+}
+
+# ─── Production: real domain with auto-Let's Encrypt ─────────────────────
+your-domain.com {
+    encode gzip zstd
+
+    # Customer-facing pages + admin/staff/kitchen + Flutter mobile (web)
+    handle /api/* {
+        reverse_proxy 127.0.0.1:4000
+    }
+    handle /uploads/* {
+        reverse_proxy 127.0.0.1:4000
+    }
+    handle /socket.io/* {
+        reverse_proxy 127.0.0.1:4000
+    }
+
+    # Next.js web frontend
+    handle {
+        reverse_proxy 127.0.0.1:3000
+    }
+
+    # Push service worker — must be served from same origin
+    @sw path /sw.js
+    handle @sw {
+        header Service-Worker-Allowed "/"
+        reverse_proxy 127.0.0.1:3000
+    }
+
+    log {
+        output file C:\caddy\logs\access.log {
+            roll_size 100mb
+            roll_keep 10
+        }
+    }
+}
+
+# ─── LAN-only: HTTPS via Caddy's internal CA (self-signed) ──────────────
+# Use https://192.168.1.10 — first visit asks to trust the cert.
+# Caddy auto-installs its CA into Windows trust store on first run.
+# Uncomment if you don't have a real domain:
+#
+# 192.168.1.10 {
+#     tls internal
+#     reverse_proxy /api/*       127.0.0.1:4000
+#     reverse_proxy /uploads/*   127.0.0.1:4000
+#     reverse_proxy /socket.io/* 127.0.0.1:4000
+#     reverse_proxy 127.0.0.1:3000
+# }
+
+# ─── Bonus: redirect plain HTTP → HTTPS (Caddy does this by default) ────

@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<service>
+  <id>pos-v2-backend</id>
+  <name>POS V2 — Backend (Express)</name>
+  <description>POS_V2 REST + Socket.io + ESC/POS print queue</description>
+
+  <executable>C:\Program Files\nodejs\node.exe</executable>
+  <arguments>src\server.js</arguments>
+  <workingdirectory>D:\POS_V2\backend</workingdirectory>
+
+  <onfailure action="restart" delay="3 sec"/>
+  <onfailure action="restart" delay="10 sec"/>
+  <onfailure action="restart" delay="30 sec"/>
+  <resetfailure>1 hour</resetfailure>
+
+  <log mode="roll-by-size">
+    <sizeThreshold>10240</sizeThreshold>
+    <keepFiles>5</keepFiles>
+  </log>
+  <logpath>D:\POS_V2\backend\logs</logpath>
+
+  <startmode>Automatic</startmode>
+  <delayedAutoStart>false</delayedAutoStart>
+</service>
