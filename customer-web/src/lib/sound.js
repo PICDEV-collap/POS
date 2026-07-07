@@ -166,11 +166,24 @@ function playClip(url, onFail) {
   }
 }
 
-// Preload the clips so the first real order plays instantly.
+// Preload the clips and — when called from a user gesture — unlock them for
+// iOS/Safari, which only lets an HTMLAudio element play after a gesture-time
+// play(). Priming (muted play → pause) outside a gesture just fails harmlessly
+// and is retried on the next tap.
 function warmClips() {
   if (typeof Audio === 'undefined') return;
-  for (const url of [CLIP_NEW_ORDER, CLIP_PAYMENT]) {
-    if (!_clips[url]) { const a = new Audio(url); a.preload = 'auto'; _clips[url] = a; }
+  for (const url of [CLIP_NEW_ORDER, CLIP_PAYMENT, CLIP_CALL]) {
+    let a = _clips[url];
+    if (!a) { a = new Audio(url); a.preload = 'auto'; _clips[url] = a; }
+    if (a.__primed) continue;
+    a.muted = true;
+    try {
+      const p = a.play();
+      if (p && typeof p.then === 'function') {
+        p.then(() => { a.pause(); a.currentTime = 0; a.muted = false; a.__primed = true; })
+          .catch(() => { a.muted = false; });
+      }
+    } catch { a.muted = false; }
   }
 }
 
