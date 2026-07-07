@@ -144,6 +144,18 @@ class ApiService {
     return PosOrder.fromJson(j);
   }
 
+  /// Combined bill for a table: sum of unpaid orders + one PromptPay/Thai QR.
+  Future<Map<String, dynamic>> getTablePayment(int tableId) async {
+    final res = await _send('GET', '/api/payments/table/$tableId');
+    return (res as Map).cast<String, dynamic>();
+  }
+
+  /// Mark every unpaid order at a table as paid; returns how many were settled.
+  Future<int> payTable(int tableId) async {
+    final res = await _send('PATCH', '/api/orders/table/$tableId/pay');
+    return ((res as Map)['count'] as num?)?.toInt() ?? 0;
+  }
+
   Future<Map<String, dynamic>> printOrder(int id, String type) async {
     return await _send('POST', '/api/print/order/$id?type=$type')
         as Map<String, dynamic>;

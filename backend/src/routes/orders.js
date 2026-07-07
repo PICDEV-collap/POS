@@ -507,6 +507,45 @@ router.patch('/:id/status', authRequired, requireRole('staff', 'admin', 'kitchen
   res.json(order);
 });
 
+// Settle a whole table: mark every unpaid order paid in one transaction
+// (customer paid the combined bill). Emits an update per affected order.
+router.patch('/table/:tableId/pay', authRequired, requireRole('staff', 'admin'), async (req, res) => {
+  const storeId = resolveStoreId(req);
+  const tableId = Number.parseInt(req.params.tableId, 10);
+  if (!Number.isInteger(tableId) || tableId <= 0) {
+    return res.status(400).json({ error: 'invalid table' });
+  }
+  const client = await db.getClient();
+  let paidIds = [];
+  try {
+    await client.query('BEGIN');
+    // Settle only the current business day — never auto-close stale orders that
+    // were left unpaid on previous days.
+    const { rows } = await client.query(
+      `UPDATE orders
+          SET status = 'paid', updated_at = NOW()
+        WHERE table_id = $1 AND store_id = $2
+          AND status NOT IN ('paid', 'cancelled')
+          AND business_date = (NOW() AT TIME ZONE 'Asia/Bangkok')::date
+        RETURNING id`,
+      [tableId, storeId]
+    );
+    paidIds = rows.map((r) => r.id);
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
+  }
+  const orders = [];
+  for (const id of paidIds) {
+    const order = await loadOrder(id, storeId);
+    if (order) { emit('order:update', order); orders.push(order); }
+  }
+  res.json({ table_id: tableId, paid_order_ids: paidIds, count: paidIds.length, orders });
+});
+
 // Update single line item status (kitchen partial-cook flow)
 router.patch('/items/:itemId/status', authRequired, requireRole('staff', 'admin', 'kitchen'), async (req, res) => {
   const { status } = req.body || {};
