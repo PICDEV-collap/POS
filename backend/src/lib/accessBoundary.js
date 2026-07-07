@@ -11,9 +11,12 @@ function normalizeIp(ip) {
 }
 
 function clientIp(req) {
-  const forwarded = firstHeaderValue(req.headers['x-forwarded-for']);
-  if (forwarded) return normalizeIp(forwarded);
-  return normalizeIp(firstHeaderValue(req.headers['x-real-ip']) || req.ip || req.socket?.remoteAddress || '');
+  // Use the IP Express derives from the configured `trust proxy` depth, NOT the
+  // raw X-Forwarded-For header. The leftmost header value is client-supplied
+  // and spoofable; trusting it would let a remote client forge a private/LAN
+  // address and defeat the LAN-only admin gate. req.ip only honours the
+  // forwarded chain up to the trusted hop count, so it fails closed.
+  return normalizeIp(req.ip || req.socket?.remoteAddress || '');
 }
 
 function isLoopbackIp(ip) {

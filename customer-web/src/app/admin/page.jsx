@@ -12,6 +12,7 @@ import {
 } from '@/lib/auth';
 import { apiBase } from '@/lib/api';
 import { useRealtimeRecovery } from '@/lib/realtimeRecovery';
+import { useOrderSounds, SoundToggleButton } from '@/lib/sound';
 import { ensureSocketConnected } from '@/lib/socket';
 import { storageGet, storageSet } from '@/lib/browser';
 import { openQrPrintWindow } from '@/lib/printQr';
@@ -108,6 +109,9 @@ export default function AdminPage() {
     setAuthState(a);
   }, [router]);
 
+  // Order chimes follow the store the admin is currently managing.
+  useOrderSounds({ storeId: activeStoreId });
+
   async function handleLogout() { await logout(); router.replace('/login'); }
 
   if (!auth) return null;
@@ -132,6 +136,7 @@ export default function AdminPage() {
           </div>
         </div>
         <div className="admin-actions admin-header-actions">
+          <SoundToggleButton />
           {isAdmin && (
             <StoreSwitcher
               currentUser={auth.user}
@@ -188,28 +193,31 @@ export default function AdminPage() {
   );
 }
 
+// Shared style objects sourced from the --pos-* design tokens in globals.css
+// (single source of truth for the palette). Values without an exact token
+// stay literal on purpose — do not eyeball-map to a "close" token.
 const navLinkStyle = {
-  background: 'rgba(245,179,51,.16)', color: '#f5b333',
+  background: 'rgba(245,179,51,.16)', color: 'var(--pos-gold)',
   border: '1px solid rgba(245,179,51,.3)', padding: '8px 15px',
   borderRadius: 999, textDecoration: 'none', fontSize: 12.5, fontWeight: 700,
 };
 
-const card = { background: 'white', borderRadius: 16, padding: 16,
-               border: '1px solid #e6e8f2',
-               boxShadow: '0 1px 2px rgba(24,28,52,.05), 0 2px 8px rgba(24,28,52,.05)',
+const card = { background: 'var(--pos-surface)', borderRadius: 16, padding: 16,
+               border: '1px solid var(--pos-border)',
+               boxShadow: 'var(--pos-shadow-sm)',
                marginBottom: 12 };
-const btnPrimary = { background: 'linear-gradient(135deg,#1c2342,#2c3567)', color: 'white',
+const btnPrimary = { background: 'linear-gradient(135deg, var(--pos-navy-1), var(--pos-navy-2))', color: 'white',
                      border: 'none', borderRadius: 10,
                      padding: '9px 16px', fontWeight: 700, fontSize: 13, cursor: 'pointer',
                      boxShadow: '0 4px 12px rgba(28,35,66,.22)' };
-const btnSecondary = { background: '#eef0f7', color: '#1c2342', border: '1px solid #dfe2ee',
+const btnSecondary = { background: '#eef0f7', color: 'var(--pos-navy-1)', border: '1px solid #dfe2ee',
                        borderRadius: 10,
                        padding: '9px 16px', fontWeight: 600, fontSize: 13, cursor: 'pointer' };
-const btnDanger = { background: '#fdecf1', color: '#c23054', border: '1px solid rgba(229,71,107,.25)',
+const btnDanger = { background: 'var(--pos-red-soft)', color: 'var(--pos-red-dark)', border: '1px solid rgba(229,71,107,.25)',
                     borderRadius: 10, padding: '9px 16px', fontWeight: 600, fontSize: 13, cursor: 'pointer' };
 const inputStyle = { width: '100%', padding: '9px 13px', borderRadius: 10,
                      border: '1.5px solid #dfe2ee', fontSize: 14, outline: 'none',
-                     background: '#f8f9fd', boxSizing: 'border-box' };
+                     background: 'var(--pos-surface-alt)', boxSizing: 'border-box' };
 
 // ─────────────────────────────────────────────────────────────────────
 function StoreSwitcher({ currentUser, activeStoreId, onChange }) {
@@ -924,9 +932,13 @@ function OrdersTab() {
 
 // ─────────────────────────────────────────────────────────────────────
 function AccountingTab() {
-  const today = localDateInput();
-  const [from, setFrom] = useState(today);
-  const [to, setTo] = useState(today);
+  const nowMonth = currentYearMonth();
+  const initBounds = monthBounds(nowMonth);
+  const [mode, setMode] = useState('month'); // 'month' | 'year' | 'custom'
+  const [month, setMonth] = useState(nowMonth);
+  const [year, setYear] = useState(String(new Date().getFullYear()));
+  const [from, setFrom] = useState(initBounds.from);
+  const [to, setTo] = useState(initBounds.to);
   const [report, setReport] = useState(null);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -947,14 +959,41 @@ function AccountingTab() {
 
   useEffect(() => { reload(); }, [reload]);
 
-  async function downloadCsv(type) {
+  function periodLabel() {
+    if (mode === 'month') return monthLabelTH(month);
+    if (mode === 'year') return yearLabelTH(year);
+    return `${from} – ${to}`;
+  }
+
+  function changeMode(m) {
+    setMode(m);
+    if (m === 'month') { const b = monthBounds(month); setFrom(b.from); setTo(b.to); }
+    else if (m === 'year') { const b = yearBounds(year); setFrom(b.from); setTo(b.to); }
+    // 'custom' keeps the current from/to
+  }
+
+  function onMonthChange(v) {
+    if (!v) return;
+    setMonth(v);
+    const b = monthBounds(v);
+    setFrom(b.from);
+    setTo(b.to);
+  }
+
+  function onYearChange(v) {
+    setYear(v);
+    const b = yearBounds(v);
+    setFrom(b.from);
+    setTo(b.to);
+  }
+
+  async function downloadFile(url, filename, key) {
     const auth = getAuth();
     if (!auth?.token) return setError('not logged in');
-    setExporting(type);
+    setExporting(key);
     setError(null);
     try {
-      const qs = new URLSearchParams({ from, to, type }).toString();
-      const res = await fetch(`${apiBase}/api/accounting/export?${qs}`, {
+      const res = await fetch(url, {
         cache: 'no-store',
         credentials: apiBase ? 'omit' : 'same-origin',
         headers: { Authorization: `Bearer ${auth.token}`, ...activeStoreHeaders(auth) },
@@ -965,19 +1004,30 @@ function AccountingTab() {
         throw new Error(msg);
       }
       const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
+      const objUrl = URL.createObjectURL(blob);
       const a = document.createElement('a');
-      a.href = url;
-      a.download = `pos-${type}-${from}-${to}.csv`;
+      a.href = objUrl;
+      a.download = filename;
       document.body.appendChild(a);
       a.click();
       a.remove();
-      URL.revokeObjectURL(url);
+      URL.revokeObjectURL(objUrl);
     } catch (e) {
       setError(e.message);
     } finally {
       setExporting(null);
     }
+  }
+
+  function downloadCsv(type) {
+    const qs = new URLSearchParams({ from, to, type }).toString();
+    return downloadFile(`${apiBase}/api/accounting/export?${qs}`, `pos-${type}-${from}-${to}.csv`, type);
+  }
+
+  function downloadPdf() {
+    const qs = new URLSearchParams({ from, to, label: periodLabel() }).toString();
+    const tag = mode === 'month' ? month : mode === 'year' ? year : `${from}-${to}`;
+    return downloadFile(`${apiBase}/api/accounting/report.pdf?${qs}`, `pos-report-${tag}.pdf`, 'pdf');
   }
 
   const summary = report?.summary || {
@@ -988,15 +1038,49 @@ function AccountingTab() {
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center',
                     flexWrap: 'wrap', gap: 10, marginBottom: 12 }}>
-        <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800 }}>รายงานบัญชี Non-VAT</h2>
+        <div>
+          <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800 }}>รายงานบัญชี Non-VAT</h2>
+          <div style={{ fontSize: 13, color: '#7a8099', marginTop: 2 }}>ช่วงเวลา: {periodLabel()}</div>
+        </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-          <input type="date" value={from} onChange={(e) => setFrom(e.target.value)}
-                 style={{ ...inputStyle, width: 150 }} />
-          <span style={{ color: '#888', fontSize: 12 }}>ถึง</span>
-          <input type="date" value={to} onChange={(e) => setTo(e.target.value)}
-                 style={{ ...inputStyle, width: 150 }} />
+          <div style={{ display: 'inline-flex', background: '#eef0f7', borderRadius: 10, padding: 3, gap: 3 }}>
+            {[['month', 'รายเดือน'], ['year', 'รายปี'], ['custom', 'กำหนดเอง']].map(([m, label]) => (
+              <button key={m} onClick={() => changeMode(m)}
+                      style={{ border: 'none', borderRadius: 8, padding: '6px 12px', fontSize: 12,
+                               fontWeight: 700, cursor: 'pointer',
+                               background: mode === m ? '#fff' : 'transparent',
+                               color: mode === m ? '#1c2342' : '#7a8099',
+                               boxShadow: mode === m ? '0 1px 3px rgba(28,35,66,.18)' : 'none' }}>
+                {label}
+              </button>
+            ))}
+          </div>
+          {mode === 'month' && (
+            <input type="month" value={month} onChange={(e) => onMonthChange(e.target.value)}
+                   style={{ ...inputStyle, width: 160 }} />
+          )}
+          {mode === 'year' && (
+            <select value={year} onChange={(e) => onYearChange(e.target.value)}
+                    style={{ ...inputStyle, width: 150 }}>
+              {Array.from({ length: 6 }, (_, i) => new Date().getFullYear() - i).map((y) => (
+                <option key={y} value={String(y)}>{`พ.ศ. ${y + 543}`}</option>
+              ))}
+            </select>
+          )}
+          {mode === 'custom' && (
+            <>
+              <input type="date" value={from} onChange={(e) => setFrom(e.target.value)}
+                     style={{ ...inputStyle, width: 150 }} />
+              <span style={{ color: '#888', fontSize: 12 }}>ถึง</span>
+              <input type="date" value={to} onChange={(e) => setTo(e.target.value)}
+                     style={{ ...inputStyle, width: 150 }} />
+            </>
+          )}
           <button onClick={reload} style={btnSecondary} disabled={loading}>
             {loading ? 'กำลังโหลด...' : 'รีเฟรช'}
+          </button>
+          <button onClick={downloadPdf} style={btnPrimary} disabled={exporting === 'pdf'}>
+            {exporting === 'pdf' ? 'กำลังสร้าง PDF...' : '📄 บันทึก PDF'}
           </button>
         </div>
       </div>
@@ -1011,12 +1095,13 @@ function AccountingTab() {
         <StatCard label="จำนวนที่ขาย" value={summary.items_sold} icon="×" />
       </div>
 
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12, alignItems: 'center' }}>
+        <span style={{ fontSize: 12, color: '#7a8099', fontWeight: 600 }}>Export CSV:</span>
         {['summary', 'daily', 'payments', 'products', 'orders'].map((type) => (
           <button key={type} onClick={() => downloadCsv(type)}
                   disabled={exporting === type}
                   style={{ ...btnSecondary, fontSize: 12 }}>
-            Export {type}{exporting === type ? '...' : ''}
+            {type}{exporting === type ? '...' : ''}
           </button>
         ))}
       </div>
@@ -1109,6 +1194,32 @@ function ReportTable({ title, rows, columns }) {
 function localDateInput(date = new Date()) {
   const d = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
   return d.toISOString().slice(0, 10);
+}
+
+const THAI_MONTHS = ['มกราคม', 'กุมภาพันธ์', 'มีนาคม', 'เมษายน', 'พฤษภาคม', 'มิถุนายน',
+                     'กรกฎาคม', 'สิงหาคม', 'กันยายน', 'ตุลาคม', 'พฤศจิกายน', 'ธันวาคม'];
+
+function currentYearMonth() {
+  return localDateInput().slice(0, 7); // 'YYYY-MM'
+}
+
+function monthBounds(ym) {
+  const [y, m] = ym.split('-').map(Number);
+  const last = new Date(y, m, 0).getDate(); // day 0 of next month = last day of this one
+  return { from: `${ym}-01`, to: `${ym}-${String(last).padStart(2, '0')}` };
+}
+
+function yearBounds(y) {
+  return { from: `${y}-01-01`, to: `${y}-12-31` };
+}
+
+function monthLabelTH(ym) {
+  const [y, m] = ym.split('-').map(Number);
+  return `${THAI_MONTHS[m - 1]} ${y + 543}`; // Buddhist year
+}
+
+function yearLabelTH(y) {
+  return `ปี ${Number(y) + 543}`;
 }
 
 function moneyText(value) {
@@ -3471,7 +3582,12 @@ function PrintQueueTab({ isAdmin }) {
 
   useEffect(() => {
     reload();
-    const t = setInterval(reload, 3000); // poll every 3s — queue moves fast
+    // Poll every 3s — queue moves fast. Skip ticks while the tab is hidden
+    // so a forgotten admin tab doesn't hammer the API all day.
+    const t = setInterval(() => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      reload();
+    }, 3000);
     return () => clearInterval(t);
   }, [reload]);
 

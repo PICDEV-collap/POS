@@ -395,18 +395,34 @@ async function restoreStockForOrder(client, orderId, movementType, createdBy) {
   await restoreStockForItems(client, rows, movementType, createdBy);
 }
 
-// Staff/admin/kitchen: list orders, optional status filter
+// Staff/admin/kitchen: list orders, optional status filter.
+// ?include_items=1 embeds line items per order in the same query — the
+// kitchen display needs them and must not fan out into N detail requests.
 router.get('/', authRequired, async (req, res) => {
   const { status } = req.query;
+  const includeItems = req.query.include_items === '1' || req.query.include_items === 'true';
   const params = [];
   const filters = [storePredicate(req, 'o', params)];
   if (status) { params.push(status); filters.push(`o.status = $${params.length}`); }
   const where = `WHERE ${filters.join(' AND ')}`;
+  const itemsSelect = includeItems
+    ? `COALESCE((
+         SELECT json_agg(json_build_object(
+           'id', oi.id, 'product_id', oi.product_id, 'product_name', oi.product_name,
+           'unit_price', oi.unit_price, 'quantity', oi.quantity, 'note', oi.note,
+           'option_label', oi.option_label, 'options_selected', oi.options_selected,
+           'variant_name', oi.variant_name, 'fulfillment_type', oi.fulfillment_type,
+           'print_station_key', oi.print_station_key, 'status', oi.status
+         ) ORDER BY oi.id)
+         FROM order_items oi WHERE oi.order_id = o.id
+       ), '[]'::json) AS items,`
+    : '';
   const { rows } = await db.query(
     `SELECT o.id, o.table_id, t.code AS table_code, t.name AS table_name,
             o.store_id, o.business_date, o.daily_seq,
             o.status, o.total_amount, o.note, o.source,
             o.order_type, o.customer_name,
+            ${itemsSelect}
             (SELECT COUNT(*)::int FROM order_items oi WHERE oi.order_id = o.id) AS item_count,
             COALESCE((
               SELECT CASE

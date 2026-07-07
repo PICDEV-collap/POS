@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { getAuth, authFetch, clearAuth, logout } from '@/lib/auth';
 import { apiBase } from '@/lib/api';
 import { useRealtimeRecovery } from '@/lib/realtimeRecovery';
+import { useOrderSounds, useTableCalls, SoundToggleButton } from '@/lib/sound';
 import { ensureSocketConnected } from '@/lib/socket';
 import { storageGet } from '@/lib/browser';
 import { openQrPrintWindow } from '@/lib/printQr';
@@ -130,6 +131,27 @@ export default function StaffPage() {
   }, []);
 
   useRealtimeRecovery(reloadOrders, { intervalMs: 12000 });
+  // New-order chime + payment chime for the cashier screen.
+  useOrderSounds({ storeId: auth?.user?.store_id });
+
+  // Customer "call staff / request bill" → banner + voice announcement.
+  const [pendingCalls, setPendingCalls] = useState([]);
+  useTableCalls((payload) => {
+    setPendingCalls((prev) => {
+      const rest = prev.filter((c) => c.table_id !== payload.table_id);
+      return [
+        {
+          table_id: payload.table_id,
+          table_name: payload.table_name,
+          type: payload.type,
+          at: payload.at,
+        },
+        ...rest,
+      ].slice(0, 12);
+    });
+  }, { storeId: auth?.user?.store_id });
+  const dismissCall = (tableId) =>
+    setPendingCalls((prev) => prev.filter((c) => c.table_id !== tableId));
 
   // Refetch menu when product:availability fires. Uses the same hook as
   // orders sync — proven to survive socket rebuilds, browser tab resume,
@@ -392,6 +414,7 @@ export default function StaffPage() {
           <div style={{ opacity: .6, fontSize: 12, marginTop: 1 }}>{auth.user.full_name}</div>
         </div>
         <div className="staff-topbar-actions" style={{ display: 'flex', gap: 8 }}>
+          <SoundToggleButton />
           <button onClick={handleLogout}
                   style={{ background: 'rgba(229,71,107,.16)', color: '#ff9eb5',
                            border: '1px solid rgba(229,71,107,.35)', padding: '8px 16px',
@@ -402,7 +425,32 @@ export default function StaffPage() {
       </header>
 
       {error && (
-        <div style={{ background: '#ffe5e5', color: '#c00', padding: '8px 14px', fontSize: 13 }}>{error}</div>
+        <div role="alert" style={{ background: '#ffe5e5', color: '#c00', padding: '8px 14px', fontSize: 13 }}>{error}</div>
+      )}
+
+      {pendingCalls.length > 0 && (
+        <div role="alert" style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: '10px 14px 0' }}>
+          {pendingCalls.map((c) => (
+            <div key={c.table_id} style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
+              background: 'linear-gradient(135deg, #e85d04, #c84f00)', color: '#fff',
+              borderRadius: 12, padding: '12px 14px',
+              boxShadow: '0 8px 20px rgba(232,93,4,.3)',
+            }}>
+              <span style={{ fontWeight: 800, fontSize: 15 }}>
+                {c.type === 'service' ? '🔔' : '💰'} {c.table_name}
+                <span style={{ fontWeight: 500, opacity: 0.9, marginLeft: 6 }}>
+                  {c.type === 'service' ? 'เรียกพนักงาน' : 'เรียกเก็บเงิน'}
+                </span>
+              </span>
+              <button type="button" onClick={() => dismissCall(c.table_id)} style={{
+                border: 'none', borderRadius: 999, background: 'rgba(255,255,255,.25)',
+                color: '#fff', padding: '7px 16px', fontWeight: 700, fontSize: 13,
+                cursor: 'pointer', whiteSpace: 'nowrap',
+              }}>รับทราบ</button>
+            </div>
+          ))}
+        </div>
       )}
 
       <div className="staff-layout" style={{ display: 'grid', gridTemplateColumns: '260px minmax(0, 1fr)', gap: 0, minHeight: 'calc(var(--app-height, 100vh) - 56px)' }}>

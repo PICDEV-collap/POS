@@ -42,7 +42,13 @@ app.use(helmet({
   crossOriginResourcePolicy: { policy: 'cross-origin' },  // allow /uploads from web origin
 }));
 
-app.use(cors({ origin: corsOrigins.length ? corsOrigins : true, credentials: true }));
+// Reflecting an arbitrary origin together with credentials is unsafe. Only
+// allow credentials when an explicit allowlist is configured; the no-allowlist
+// fallback reflects the origin but drops credentials. Auth uses Bearer tokens
+// (no cookies), so this fallback does not affect normal operation.
+app.use(cors(corsOrigins.length
+  ? { origin: corsOrigins, credentials: true }
+  : { origin: true, credentials: false }));
 app.use(express.json({ limit: '1mb' }));
 app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev'));
 
@@ -76,6 +82,21 @@ const publicOrderLimiter = rateLimit({
   },
 });
 
+// Rate limit: customer "call staff / request bill" (prevent button-spam)
+const publicCallLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 6,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  keyGenerator: (req) => {
+    const token = typeof req.body?.token === 'string'
+      ? req.body.token.slice(0, 64)
+      : 'no-table-token';
+    return `${ipKeyGenerator(req.ip)}:${token}`;
+  },
+  message: { error: 'เรียกพนักงานถี่เกินไป กรุณารอสักครู่' },
+});
+
 // Generic API rate limit
 const apiLimiter = rateLimit({
   windowMs: 60 * 1000,
@@ -98,6 +119,7 @@ app.use('/uploads', express.static(path.join(__dirname, '..', 'uploads'), {
 app.use('/api/auth/login', loginLimiter);
 app.use('/api/auth/refresh', loginLimiter);
 app.post('/api/public/orders', publicOrderLimiter);
+app.post('/api/public/call-staff', publicCallLimiter);
 app.use('/api', apiLimiter);
 
 app.use('/api/auth', authRoutes);

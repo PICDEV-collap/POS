@@ -5,7 +5,7 @@ import 'package:provider/provider.dart';
 import '../services/api_service.dart';
 import '../services/bluetooth_printer_service.dart';
 
-const _kNavy = Color(0xFF1A1A2E);
+const _kNavy = Color(0xFF1C2342);
 const _kGreen = Color(0xFF06D6A0);
 const _kOrange = Color(0xFFE85D04);
 

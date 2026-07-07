@@ -770,6 +770,27 @@ select.login-input {
   .login-card { padding: 20px 18px; gap: 10px; }
 }
 
+/* ─── Order-event attention pulse ─────────────────────────────────── */
+/* Fresh kitchen orders glow a few times, paired with the new-order chime.
+   Applied inline as `animation: posNewOrderPulse 1.5s ease-out 3`. */
+@keyframes posNewOrderPulse {
+  0% {
+    box-shadow: 0 10px 30px rgba(0, 0, 0, .3), 0 0 0 0 rgba(245, 179, 51, .55);
+  }
+  55% {
+    box-shadow: 0 10px 30px rgba(0, 0, 0, .3), 0 0 0 14px rgba(245, 179, 51, 0);
+  }
+  100% {
+    box-shadow: 0 10px 30px rgba(0, 0, 0, .3), 0 0 0 0 rgba(245, 179, 51, 0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .kitchen-order-card {
+    animation: none !important;
+  }
+}
+
 /* ─── Print Preview (thermal receipt) ─────────────────────────────── */
 .print-preview-shell {
   background: #f5f5f7;

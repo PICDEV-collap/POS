@@ -172,9 +172,11 @@ function requestHost(req) {
 }
 
 function clientIp(req) {
-  const forwarded = firstHeaderValue(req.headers['x-forwarded-for']);
-  if (forwarded) return normalizeIp(forwarded);
-  return normalizeIp(firstHeaderValue(req.headers['x-real-ip']) || req.ip || req.socket?.remoteAddress || '');
+  // Trust the IP Express derives from `trust proxy`, not the raw, spoofable
+  // X-Forwarded-For header. Otherwise a remote client could forge a private
+  // LAN IP to bypass the "shop WiFi only" network gate and the GPS radius
+  // check (which is skipped on trusted local networks).
+  return normalizeIp(req.ip || req.socket?.remoteAddress || '');
 }
 
 function hasForwardedClientIp(req) {

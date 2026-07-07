@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { getAuth, authFetch, clearAuth, logout } from '@/lib/auth';
 import { useRealtimeRecovery } from '@/lib/realtimeRecovery';
+import { useOrderSounds, SoundToggleButton } from '@/lib/sound';
 import { pushSupported, getSubscriptionState, subscribe as pushSubscribe, unsubscribe as pushUnsubscribe, sendTest as pushSendTest } from '@/lib/push';
 
 const ACTIVE_STATUSES = ['pending', 'cooking', 'served'];
@@ -60,11 +61,14 @@ export default function KitchenPage() {
 
   const reload = useCallback(async () => {
     try {
-      const list = await authFetch('/api/orders');
-      const detailed = await Promise.all(
-        list.map((o) => authFetch(`/api/orders/${o.id}`))
-      );
-      setOrders(detailed);
+      // One request with embedded line items (was: 1 list + N detail fetches
+      // every refresh). Falls back to the fan-out only if the backend
+      // predates include_items.
+      let list = await authFetch('/api/orders?include_items=1');
+      if (list.length && !Array.isArray(list[0].items)) {
+        list = await Promise.all(list.map((o) => authFetch(`/api/orders/${o.id}`)));
+      }
+      setOrders(list);
       setError(null);
     } catch (e) {
       setError(e.message);
@@ -72,6 +76,7 @@ export default function KitchenPage() {
   }, []);
 
   useRealtimeRecovery(reload, { intervalMs: 10000 });
+  useOrderSounds({ storeId: auth?.user?.store_id });
 
   useEffect(() => {
     const a = getAuth();
@@ -173,6 +178,7 @@ export default function KitchenPage() {
           </div>
         </div>
         <div className="kitchen-topbar-actions" style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+          <SoundToggleButton />
           <button onClick={togglePush}
                   title="เปิด/ปิดการแจ้งเตือน"
                   style={{ background: 'rgba(245,179,51,.15)', color: '#f5b333',
@@ -201,7 +207,7 @@ export default function KitchenPage() {
       </div>
 
       {error && (
-        <div style={{ background: 'rgba(229,71,107,.16)', color: '#ff8aa4',
+        <div role="alert" style={{ background: 'rgba(229,71,107,.16)', color: '#ff8aa4',
                       padding: '8px 14px', fontSize: 13 }}>
           {error}
         </div>
@@ -219,12 +225,17 @@ export default function KitchenPage() {
             const stColor = STATUS_COLOR[o.status] || '#666';
             const next = NEXT_STATUS[o.status];
             const orderFulfillment = fulfillmentBadge(o);
+            // Freshly arrived orders pulse a few times to catch the eye —
+            // pairs with the new-order chime. Runs once per card mount.
+            const isFresh = o.status === 'pending'
+              && Date.now() - new Date(o.created_at).getTime() < 90000;
             return (
               <div key={o.id}
                    className="kitchen-order-card"
                    style={{ background: 'rgba(255,255,255,.05)', borderRadius: 18, padding: 16,
                             border: '1px solid rgba(255,255,255,.08)',
                             borderLeft: `4px solid ${stColor}`,
+                            animation: isFresh ? 'posNewOrderPulse 1.5s ease-out 3' : 'none',
                             boxShadow: '0 10px 30px rgba(0,0,0,.3)' }}>
                 <div className="kitchen-order-header" style={{ display: 'flex', justifyContent: 'space-between',
                               alignItems: 'center', marginBottom: 10 }}>
@@ -249,7 +260,7 @@ export default function KitchenPage() {
                   </span>
                 </div>
 
-                {o.items.map((it) => {
+                {(o.items || []).map((it) => {
                   const f = itemFulfillment(o, it);
                   return (
                   <div key={it.id} style={{ padding: '6px 0', borderBottom: '1px solid rgba(255,255,255,.05)',

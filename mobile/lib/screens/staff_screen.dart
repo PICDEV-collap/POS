@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:provider/provider.dart';
+import '../services/sound_service.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../config.dart';
 import '../models/order.dart';
@@ -105,6 +106,30 @@ class _StaffScreenState extends State<StaffScreen> with WidgetsBindingObserver {
     s.on('order:new', _onEvt);
     s.on('order:update', _onEvt);
     s.on('product:availability', _onAvailEvt);
+    s.on('table:call', _onCall);
+  }
+
+  void _onCall(dynamic data) {
+    if (data is! Map || !mounted) return;
+    final want = context.read<AuthService>().activeStoreId;
+    final got = int.tryParse('${data['store_id']}');
+    if (want != null && got != null && got != want) return;
+    final at = DateTime.tryParse('${data['at']}');
+    if (at != null && DateTime.now().difference(at).inMinutes >= 3) return;
+    context.read<SoundService>().playCall();
+    final name = '${data['table_name'] ?? data['table_code'] ?? 'โต๊ะ'}';
+    final service = data['type'] == 'service';
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          '${service ? '🔔' : '💰'} $name · ${service ? 'เรียกพนักงาน' : 'เรียกเก็บเงิน'}',
+          style: const TextStyle(fontWeight: FontWeight.w700),
+        ),
+        backgroundColor: const Color(0xFFC84F00),
+        duration: const Duration(seconds: 6),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
   }
 
   void _onAvailEvt(dynamic payload) {
@@ -126,6 +151,7 @@ class _StaffScreenState extends State<StaffScreen> with WidgetsBindingObserver {
     s.off('order:new', _onEvt);
     s.off('order:update', _onEvt);
     s.off('product:availability', _onAvailEvt);
+    s.off('table:call', _onCall);
     _pollTimer?.cancel();
     _scanController.dispose();
     WidgetsBinding.instance.removeObserver(this);
@@ -1011,6 +1037,7 @@ class _StaffScreenState extends State<StaffScreen> with WidgetsBindingObserver {
                 onPressed: () => unawaited(_handleBack()),
               ),
               actions: [
+                const SoundToggleButton(),
                 IconButton(
                   tooltip: 'ตั้งค่าเครื่องพิมพ์',
                   icon: Icon(

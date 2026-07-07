@@ -15,14 +15,17 @@ export default function OrderPageWrapper() {
   );
 }
 
-const NAVY = '#1c2342';
-const NAVY2 = '#2c3567';
-const BEIGE = '#f3f4fa';
-const GOLD = '#f5b333';
-const ORANGE = '#e85d04';
-const ORANGE2 = '#c84f00';
-const RED = '#e5476b';
-const GREEN = '#0fb98c';
+// Mirrors the --pos-* design tokens in globals.css. Kept as literal hex here
+// (not var()) because several styles derive alpha variants by string suffixing
+// (e.g. `${GOLD}22`), which CSS variables cannot do. Change both together.
+const NAVY = '#1c2342';   // --pos-navy-1
+const NAVY2 = '#2c3567';  // --pos-navy-2
+const BEIGE = '#f3f4fa';  // --pos-bg
+const GOLD = '#f5b333';   // --pos-gold
+const ORANGE = '#e85d04'; // --pos-accent
+const ORANGE2 = '#c84f00';// --pos-accent-dark
+const RED = '#e5476b';    // --pos-red
+const GREEN = '#0fb98c';  // --pos-green
 
 const STATUS_LABEL = {
   pending: '⏳ รอยืนยัน', cooking: '🍳 กำลังทำ', served: '✅ พร้อมเสิร์ฟ', paid: '💰 ชำระแล้ว', cancelled: '❌ ยกเลิก',
@@ -60,6 +63,7 @@ function OrderPage() {
   const [error, setError] = useState(null);
   const [variantModal, setVariantModal] = useState(null); // product to pick variant for
   const [success, setSuccess] = useState(null);
+  const [callState, setCallState] = useState('idle'); // idle | sending | sent
   const [customerKey, setCustomerKey] = useState(null);
   const [customerSessionToken, setCustomerSessionToken] = useState(null);
   const [ordering, setOrdering] = useState(null);
@@ -105,15 +109,22 @@ function OrderPage() {
     let alive = true;
     async function loadOrders() {
       try {
-        // We don't have a public per-table endpoint that lists orders, so re-fetch each via token+id.
-        // Workaround: store order IDs in localStorage when placing.
+        // Order ids this phone placed live in localStorage; fetch them all in
+        // one batch call instead of one request per order.
         const ids = storageJson(`pos_orders_${table.id}`, []);
-        const orders = await Promise.all(ids.map((id) => api.getOrder(id, token).catch(() => null)));
-        if (alive) setTableOrders(orders.filter(Boolean).filter((o) => o.status !== 'paid' && o.status !== 'cancelled'));
+        if (!ids.length) { if (alive) setTableOrders([]); return; }
+        const res = await api.getTableOrders(token, ids);
+        const orders = Array.isArray(res?.orders) ? res.orders : [];
+        if (alive) setTableOrders(orders.filter((o) => o.status !== 'paid' && o.status !== 'cancelled'));
       } catch {}
     }
     loadOrders();
-    const t = setInterval(loadOrders, 8000);
+    // Pause polling while the tab is hidden — socket events + the next tick
+    // after returning to the foreground keep the list fresh.
+    const t = setInterval(() => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      loadOrders();
+    }, 8000);
     return () => { alive = false; clearInterval(t); };
   }, [table, token]);
 
@@ -360,6 +371,21 @@ function OrderPage() {
     }
   }
 
+  async function handleCallStaff() {
+    if (callState !== 'idle' || !token) return;
+    setCallState('sending');
+    try {
+      await api.callStaff(token, 'bill');
+      setCallState('sent');
+      // Re-enable after a cooldown so staff aren't spammed but the guest can
+      // call again if no one comes.
+      setTimeout(() => setCallState('idle'), 30000);
+    } catch (e) {
+      setError(e.message);
+      setCallState('idle');
+    }
+  }
+
   if (error && !table) {
     return (
       <main className="max-w-md mx-auto p-6 text-center" style={{ background: BEIGE, minHeight: 'var(--app-height, 100vh)' }}>
@@ -420,7 +446,7 @@ function OrderPage() {
 
       {/* Ordering guard status */}
       {!orderingAllowed && (
-        <div style={{
+        <div role="alert" style={{
           background: '#fff0f0', border: `1.5px solid ${RED}55`,
           margin: '10px 14px 0', borderRadius: 12, padding: '12px 14px',
           color: '#b4232e', fontSize: 13, fontWeight: 700,
@@ -488,6 +514,34 @@ function OrderPage() {
             {restaurant.currency}{grandTotal.toFixed(0)}{' '}
             <span style={{ fontWeight: 500, opacity: .7, fontSize: 12 }}>ดูรายละเอียด ›</span>
           </span>
+        </div>
+      )}
+
+      {/* Call staff to collect the bill */}
+      {tableOrders.length > 0 && (
+        <div style={{ margin: '10px 14px 0' }}>
+          <button
+            type="button"
+            onClick={handleCallStaff}
+            disabled={callState !== 'idle'}
+            aria-label="เรียกพนักงานมาเก็บเงินที่โต๊ะ"
+            style={{
+              width: '100%', minHeight: 52, border: 'none', borderRadius: 14,
+              background: callState === 'sent'
+                ? `linear-gradient(135deg, ${GREEN}, #077a5d)`
+                : `linear-gradient(135deg, ${NAVY}, ${NAVY2})`,
+              color: '#fff', fontWeight: 800, fontSize: 15.5,
+              cursor: callState === 'idle' ? 'pointer' : 'default',
+              opacity: callState === 'sending' ? 0.7 : 1,
+              boxShadow: '0 8px 20px rgba(28,35,66,.28)',
+              transition: 'background .2s ease',
+            }}>
+            {callState === 'sent'
+              ? '✅ เรียกแล้ว พนักงานกำลังไป'
+              : callState === 'sending'
+                ? 'กำลังเรียก...'
+                : '🔔 เรียกพนักงานเก็บเงิน'}
+          </button>
         </div>
       )}
 
@@ -567,6 +621,7 @@ function OrderPage() {
                   <button onClick={() => onAddProduct(p)}
                     disabled={!orderingAllowed}
                     className="customer-menu-add"
+                    aria-label={`เพิ่ม ${p.name} ลงตะกร้า`}
                     style={{ opacity: orderingAllowed ? 1 : .35 }}>+</button>
                 </div>
               </div>
@@ -804,7 +859,7 @@ function OrderPage() {
               outline: 'none', boxSizing: 'border-box',
             }}
           />
-          {error && <p style={{ color: 'red', fontSize: 12, margin: '0 0 6px' }}>{error}</p>}
+          {error && <p role="alert" style={{ color: 'red', fontSize: 12, margin: '0 0 6px' }}>{error}</p>}
           <button
             disabled={submitting || cartItems.length === 0 || !orderingAllowed}
             onClick={submit}

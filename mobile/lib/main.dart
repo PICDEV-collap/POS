@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'config.dart';
+import 'theme.dart';
 import 'db/database.dart';
 import 'services/auth_service.dart';
 import 'services/socket_service.dart';
@@ -9,6 +10,7 @@ import 'services/offline_repository.dart';
 import 'services/bluetooth_printer_service.dart';
 import 'services/pos_printer_service.dart';
 import 'services/auto_print_service.dart';
+import 'services/sound_service.dart';
 import 'screens/kitchen_screen.dart';
 import 'screens/staff_screen.dart';
 import 'screens/admin_screen.dart';
@@ -33,6 +35,8 @@ Future<void> main() async {
     socket: socket,
     printer: posPrinter,
   );
+  final sound = SoundService(auth: auth, socket: socket);
+  await sound.bootstrap();
   runApp(
     MyApp(
       auth: auth,
@@ -40,6 +44,7 @@ Future<void> main() async {
       offline: offline,
       posPrinter: posPrinter,
       autoPrint: autoPrint,
+      sound: sound,
     ),
   );
 }
@@ -50,6 +55,7 @@ class MyApp extends StatelessWidget {
   final OfflineRepository offline;
   final PosPrinterService posPrinter;
   final AutoPrintService autoPrint;
+  final SoundService sound;
   const MyApp({
     super.key,
     required this.auth,
@@ -57,6 +63,7 @@ class MyApp extends StatelessWidget {
     required this.offline,
     required this.posPrinter,
     required this.autoPrint,
+    required this.sound,
   });
 
   @override
@@ -68,18 +75,12 @@ class MyApp extends StatelessWidget {
         ChangeNotifierProvider.value(value: offline),
         ChangeNotifierProvider.value(value: posPrinter),
         Provider<AutoPrintService>.value(value: autoPrint),
+        ChangeNotifierProvider.value(value: sound),
       ],
       child: MaterialApp(
         title: 'POS V2',
         debugShowCheckedModeBanner: false,
-        theme: ThemeData(
-          colorScheme: ColorScheme.fromSeed(
-            seedColor: const Color(0xFF1A1A2E),
-            primary: const Color(0xFF1A1A2E),
-            secondary: const Color(0xFFFFD166),
-          ),
-          useMaterial3: true,
-        ),
+        theme: buildAppTheme(),
         home: const _RootRouter(),
       ),
     );
@@ -129,6 +130,7 @@ class _RootRouterState extends State<_RootRouter> with WidgetsBindingObserver {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         context.read<SocketService>().connect();
         context.read<AutoPrintService>().start();
+        context.read<SoundService>().start();
       });
     }
     switch (auth.user!.role) {
@@ -161,7 +163,7 @@ class _RemoteStoreAdminRequiredScreen extends StatelessWidget {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Mobile Admin'),
-        backgroundColor: const Color(0xFF1A1A2E),
+        backgroundColor: const Color(0xFF1C2342),
         foregroundColor: Colors.white,
         actions: [
           IconButton(
@@ -214,7 +216,7 @@ class _RemoteSuperAdminBlockedScreen extends StatelessWidget {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Server Admin'),
-        backgroundColor: const Color(0xFF1A1A2E),
+        backgroundColor: const Color(0xFF1C2342),
         foregroundColor: Colors.white,
         actions: [
           IconButton(
@@ -234,7 +236,7 @@ class _RemoteSuperAdminBlockedScreen extends StatelessWidget {
                 const Icon(
                   Icons.admin_panel_settings,
                   size: 56,
-                  color: Color(0xFF1A1A2E),
+                  color: Color(0xFF1C2342),
                 ),
                 const SizedBox(height: 16),
                 const Text(
