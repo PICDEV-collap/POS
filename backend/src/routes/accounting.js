@@ -2,6 +2,7 @@ const express = require('express');
 const db = require('../db');
 const { authRequired, requireRole } = require('../middleware/auth');
 const logger = require('../lib/logger');
+const { buildReportPdf } = require('../lib/reportPdf');
 
 const router = express.Router();
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -39,6 +40,50 @@ router.get('/export', async (req, res) => {
   res.setHeader('Content-Disposition', `attachment; filename="pos-${type}-${range.from}-${range.to}.csv"`);
   res.send(`\uFEFF${csv}`);
 });
+
+router.get('/report.pdf', async (req, res) => {
+  const range = dateRange(req.query);
+  const [report, settings] = await Promise.all([
+    buildReport(range),
+    db.query('SELECT name, currency FROM restaurant_settings WHERE id = 1'),
+  ]);
+  const shop = settings.rows[0] || {};
+  const periodLabel = cleanLabel(req.query.label) || `${range.from} – ${range.to}`;
+  const rowCount = (report.orders || []).length;
+
+  const pdf = await buildReportPdf(report, {
+    shopName: shop.name || 'POS V2',
+    currency: shop.currency || '฿',
+    periodLabel,
+    generatedAt: new Date(),
+  });
+
+  await db.query(
+    `INSERT INTO accounting_exports (export_type, from_date, to_date, row_count, created_by)
+     VALUES ($1, $2, $3, $4, $5)`,
+    ['pdf', range.from, range.to, rowCount, req.user.sub]
+  );
+  logger.info('accounting.export', 'accounting report exported', {
+    export_type: 'pdf',
+    from_date: range.from,
+    to_date: range.to,
+    row_count: rowCount,
+    user_id: req.user.sub,
+  });
+
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `attachment; filename="pos-report-${range.from}-${range.to}.pdf"`);
+  res.setHeader('Content-Length', pdf.length);
+  res.send(pdf);
+});
+
+// Free-text period caption coming from the UI (e.g. "มิถุนายน 2569").
+// Strip control chars and cap length; fall back to the raw range upstream.
+function cleanLabel(value) {
+  if (value == null || value === '') return null;
+  const text = String(value).replace(/[^\p{L}\p{N}\s.\-–/()]+/gu, '').trim().slice(0, 80);
+  return text || null;
+}
 
 function dateRange(query) {
   const today = todayBangkok();
