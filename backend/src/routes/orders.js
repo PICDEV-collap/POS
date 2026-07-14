@@ -395,18 +395,34 @@ async function restoreStockForOrder(client, orderId, movementType, createdBy) {
   await restoreStockForItems(client, rows, movementType, createdBy);
 }
 
-// Staff/admin/kitchen: list orders, optional status filter
+// Staff/admin/kitchen: list orders, optional status filter.
+// ?include_items=1 embeds line items per order in the same query — the
+// kitchen display needs them and must not fan out into N detail requests.
 router.get('/', authRequired, async (req, res) => {
   const { status } = req.query;
+  const includeItems = req.query.include_items === '1' || req.query.include_items === 'true';
   const params = [];
   const filters = [storePredicate(req, 'o', params)];
   if (status) { params.push(status); filters.push(`o.status = $${params.length}`); }
   const where = `WHERE ${filters.join(' AND ')}`;
+  const itemsSelect = includeItems
+    ? `COALESCE((
+         SELECT json_agg(json_build_object(
+           'id', oi.id, 'product_id', oi.product_id, 'product_name', oi.product_name,
+           'unit_price', oi.unit_price, 'quantity', oi.quantity, 'note', oi.note,
+           'option_label', oi.option_label, 'options_selected', oi.options_selected,
+           'variant_name', oi.variant_name, 'fulfillment_type', oi.fulfillment_type,
+           'print_station_key', oi.print_station_key, 'status', oi.status
+         ) ORDER BY oi.id)
+         FROM order_items oi WHERE oi.order_id = o.id
+       ), '[]'::json) AS items,`
+    : '';
   const { rows } = await db.query(
     `SELECT o.id, o.table_id, t.code AS table_code, t.name AS table_name,
             o.store_id, o.business_date, o.daily_seq,
             o.status, o.total_amount, o.note, o.source,
             o.order_type, o.customer_name,
+            ${itemsSelect}
             (SELECT COUNT(*)::int FROM order_items oi WHERE oi.order_id = o.id) AS item_count,
             COALESCE((
               SELECT CASE
@@ -489,6 +505,45 @@ router.patch('/:id/status', authRequired, requireRole('staff', 'admin', 'kitchen
   const order = await loadOrder(req.params.id, resolveStoreId(req));
   emit('order:update', order);
   res.json(order);
+});
+
+// Settle a whole table: mark every unpaid order paid in one transaction
+// (customer paid the combined bill). Emits an update per affected order.
+router.patch('/table/:tableId/pay', authRequired, requireRole('staff', 'admin'), async (req, res) => {
+  const storeId = resolveStoreId(req);
+  const tableId = Number.parseInt(req.params.tableId, 10);
+  if (!Number.isInteger(tableId) || tableId <= 0) {
+    return res.status(400).json({ error: 'invalid table' });
+  }
+  const client = await db.getClient();
+  let paidIds = [];
+  try {
+    await client.query('BEGIN');
+    // Settle only the current business day — never auto-close stale orders that
+    // were left unpaid on previous days.
+    const { rows } = await client.query(
+      `UPDATE orders
+          SET status = 'paid', updated_at = NOW()
+        WHERE table_id = $1 AND store_id = $2
+          AND status NOT IN ('paid', 'cancelled')
+          AND business_date = (NOW() AT TIME ZONE 'Asia/Bangkok')::date
+        RETURNING id`,
+      [tableId, storeId]
+    );
+    paidIds = rows.map((r) => r.id);
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
+  }
+  const orders = [];
+  for (const id of paidIds) {
+    const order = await loadOrder(id, storeId);
+    if (order) { emit('order:update', order); orders.push(order); }
+  }
+  res.json({ table_id: tableId, paid_order_ids: paidIds, count: paidIds.length, orders });
 });
 
 // Update single line item status (kitchen partial-cook flow)

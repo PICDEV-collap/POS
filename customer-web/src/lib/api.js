@@ -65,6 +65,15 @@ export const api = {
     }),
   getOrder: (id, token) =>
     request(`/api/public/orders/${id}?token=${encodeURIComponent(token)}`),
+  // Batch status poll — one request for every order this phone placed.
+  getTableOrders: (token, ids) =>
+    request(`/api/public/table-orders?token=${encodeURIComponent(token)}&ids=${ids.map(Number).filter(Boolean).join(',')}`),
+  // Customer calls staff to the table (bill / service).
+  callStaff: (token, type = 'bill') =>
+    request('/api/public/call-staff', {
+      method: 'POST',
+      body: JSON.stringify({ token, type }),
+    }),
 };
 
 export const apiBase = BASE;

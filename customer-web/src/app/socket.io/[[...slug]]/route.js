@@ -1,5 +1,12 @@
 export const dynamic = 'force-dynamic';
 
+// Proxy the Socket.io transport (polling) to the backend. This is an OPTIONAL
+// catch-all so it matches `/socket.io`, `/socket.io/` (the trailing-slash form
+// the client actually polls) and any `/socket.io/<sid>` subpath — combined
+// with `skipTrailingSlashRedirect` in next.config.js so the long-poll isn't
+// 308-redirected. WebSocket upgrades can't pass through a route handler; the
+// client falls back to polling, which is enough for realtime events.
+
 const BACKEND_INTERNAL = process.env.BACKEND_INTERNAL_URL || 'http://localhost:4000';
 
 function proxyHeaders(request) {
@@ -23,8 +30,9 @@ function responseHeaders(upstream) {
   return headers;
 }
 
-async function proxySocketIo(request) {
-  const target = new URL('/socket.io/', BACKEND_INTERNAL);
+async function proxySocketIo(request, context) {
+  const slug = (context?.params?.slug || []).join('/');
+  const target = new URL(`/socket.io/${slug}`, BACKEND_INTERNAL);
   target.search = request.nextUrl.search;
   const method = request.method.toUpperCase();
   const body = method === 'GET' || method === 'HEAD' ? undefined : await request.arrayBuffer();
@@ -34,6 +42,7 @@ async function proxySocketIo(request) {
     body,
     cache: 'no-store',
     redirect: 'manual',
+    duplex: 'half',
   });
   return new Response(upstream.body, {
     status: upstream.status,
@@ -42,12 +51,12 @@ async function proxySocketIo(request) {
   });
 }
 
-export async function GET(request) {
-  return proxySocketIo(request);
+export async function GET(request, context) {
+  return proxySocketIo(request, context);
 }
 
-export async function POST(request) {
-  return proxySocketIo(request);
+export async function POST(request, context) {
+  return proxySocketIo(request, context);
 }
 
 export async function OPTIONS() {

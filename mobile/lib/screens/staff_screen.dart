@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:provider/provider.dart';
+import '../services/sound_service.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../config.dart';
 import '../models/order.dart';
@@ -105,6 +106,30 @@ class _StaffScreenState extends State<StaffScreen> with WidgetsBindingObserver {
     s.on('order:new', _onEvt);
     s.on('order:update', _onEvt);
     s.on('product:availability', _onAvailEvt);
+    s.on('table:call', _onCall);
+  }
+
+  void _onCall(dynamic data) {
+    if (data is! Map || !mounted) return;
+    final want = context.read<AuthService>().activeStoreId;
+    final got = int.tryParse('${data['store_id']}');
+    if (want != null && got != null && got != want) return;
+    final at = DateTime.tryParse('${data['at']}');
+    if (at != null && DateTime.now().difference(at).inMinutes >= 3) return;
+    context.read<SoundService>().playCall();
+    final name = '${data['table_name'] ?? data['table_code'] ?? 'โต๊ะ'}';
+    final service = data['type'] == 'service';
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          '${service ? '🔔' : '💰'} $name · ${service ? 'เรียกพนักงาน' : 'เรียกเก็บเงิน'}',
+          style: const TextStyle(fontWeight: FontWeight.w700),
+        ),
+        backgroundColor: const Color(0xFFC84F00),
+        duration: const Duration(seconds: 6),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
   }
 
   void _onAvailEvt(dynamic payload) {
@@ -126,6 +151,7 @@ class _StaffScreenState extends State<StaffScreen> with WidgetsBindingObserver {
     s.off('order:new', _onEvt);
     s.off('order:update', _onEvt);
     s.off('product:availability', _onAvailEvt);
+    s.off('table:call', _onCall);
     _pollTimer?.cancel();
     _scanController.dispose();
     WidgetsBinding.instance.removeObserver(this);
@@ -663,6 +689,179 @@ class _StaffScreenState extends State<StaffScreen> with WidgetsBindingObserver {
     }
   }
 
+  /// Combined-bill checkout: fetch the table's unpaid total + a PromptPay QR,
+  /// let the customer scan, and settle every unpaid order in one tap.
+  Future<void> _showTablePayment(PosTable table) async {
+    Map<String, dynamic> pay;
+    try {
+      pay = await _api.getTablePayment(table.id);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(e.toString())));
+      }
+      return;
+    }
+    if (!mounted) return;
+    final total = (pay['total'] as num?)?.toDouble() ?? 0;
+    final count = (pay['order_count'] as num?)?.toInt() ?? 0;
+    final currency = (pay['currency'] as String?) ?? '฿';
+    final qr = (pay['qr'] as Map?)?.cast<String, dynamic>() ?? const {};
+    final qrPayload = (qr['payload'] as String?) ?? '';
+    final qrEnabled = qr['enabled'] == true && qrPayload.isNotEmpty;
+    final accountName = (qr['account_name'] as String?) ?? '';
+    final label = (qr['label'] as String?)?.isNotEmpty == true
+        ? qr['label'] as String
+        : 'สแกนจ่ายเงิน';
+    var paying = false;
+
+    await showDialog<void>(
+      context: context,
+      builder: (dialogCtx) => StatefulBuilder(
+        builder: (ctx, setDialog) => Dialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+          child: Padding(
+            padding: const EdgeInsets.all(20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  'เก็บเงิน · ${table.name}',
+                  style: const TextStyle(fontSize: 13, color: Colors.grey),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  '$currency${total.toStringAsFixed(0)}',
+                  style: const TextStyle(
+                    fontSize: 32,
+                    fontWeight: FontWeight.w800,
+                    color: Color(0xFF1C2342),
+                  ),
+                ),
+                Text(
+                  'รวม $count ออเดอร์',
+                  style: const TextStyle(fontSize: 12, color: Colors.grey),
+                ),
+                const SizedBox(height: 14),
+                if (count == 0)
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFE2F8F0),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: const Text(
+                      'ไม่มีออเดอร์ค้างชำระของวันนี้ 🎉',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+                    ),
+                  )
+                else if (qrEnabled) ...[
+                  Text(
+                    label,
+                    style: const TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                  const SizedBox(height: 8),
+                  Image.network(
+                    _api.qrUrl(qrPayload, size: 512),
+                    headers: AppConfig.tunnelHeaders,
+                    width: 250,
+                    height: 250,
+                    fit: BoxFit.contain,
+                    errorBuilder: (_, __, ___) => const SizedBox(
+                      width: 250,
+                      height: 250,
+                      child: Icon(Icons.qr_code_2, size: 120),
+                    ),
+                  ),
+                  if (accountName.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 6),
+                      child: Text(
+                        accountName,
+                        style: const TextStyle(fontWeight: FontWeight.w600),
+                      ),
+                    ),
+                  const SizedBox(height: 2),
+                  const Text(
+                    'สแกนพร้อมเพย์เพื่อชำระ',
+                    style: TextStyle(fontSize: 12, color: Colors.grey),
+                  ),
+                ] else
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFFDF3DC),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: const Text(
+                      'ยังไม่ได้ตั้งค่า QR พร้อมเพย์ (ตั้งได้ในเมนูแอดมิน → ชำระเงิน)',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(fontSize: 12.5),
+                    ),
+                  ),
+                const SizedBox(height: 18),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: paying ? null : () => Navigator.pop(dialogCtx),
+                        child: const Text('ปิด'),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: FilledButton.icon(
+                        style: FilledButton.styleFrom(
+                          backgroundColor: const Color(0xFF0FB98C),
+                        ),
+                        onPressed: (paying || count == 0)
+                            ? null
+                            : () async {
+                                setDialog(() => paying = true);
+                                try {
+                                  final n = await _api.payTable(table.id);
+                                  if (!mounted) return;
+                                  Navigator.pop(dialogCtx);
+                                  unawaited(_reloadOrders());
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(
+                                      content: Text(
+                                        'ชำระแล้ว $n ออเดอร์ · ${table.name}',
+                                      ),
+                                    ),
+                                  );
+                                } catch (e) {
+                                  setDialog(() => paying = false);
+                                  ScaffoldMessenger.of(ctx).showSnackBar(
+                                    SnackBar(content: Text(e.toString())),
+                                  );
+                                }
+                              },
+                        icon: paying
+                            ? const SizedBox(
+                                width: 16,
+                                height: 16,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  color: Colors.white,
+                                ),
+                              )
+                            : const Icon(Icons.check),
+                        label: const Text('ชำระแล้ว'),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   Future<void> _printReceipt(int orderId) async {
     final msg = await printOrder(
       context: context,
@@ -1011,6 +1210,7 @@ class _StaffScreenState extends State<StaffScreen> with WidgetsBindingObserver {
                 onPressed: () => unawaited(_handleBack()),
               ),
               actions: [
+                const SoundToggleButton(),
                 IconButton(
                   tooltip: 'ตั้งค่าเครื่องพิมพ์',
                   icon: Icon(
@@ -1229,6 +1429,27 @@ class _StaffScreenState extends State<StaffScreen> with WidgetsBindingObserver {
                               ),
                             ),
                         ],
+                      ),
+                    ),
+                  ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.only(top: 6),
+                  child: SizedBox(
+                    width: double.infinity,
+                    child: FilledButton.icon(
+                      style: FilledButton.styleFrom(
+                        backgroundColor: const Color(0xFFE85D04),
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                      ),
+                      onPressed: () => _showTablePayment(_selectedTable!),
+                      icon: const Icon(Icons.qr_code_2),
+                      // Total is shown in the dialog (server-scoped to today's
+                      // business day) — the source of truth for the bill.
+                      label: const Text(
+                        'เก็บเงินทั้งโต๊ะ (สแกนจ่าย)',
+                        style: TextStyle(fontWeight: FontWeight.w700),
                       ),
                     ),
                   ),

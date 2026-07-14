@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
+import '../services/sound_service.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../config.dart';
 import '../models/order.dart';
@@ -16,8 +17,8 @@ import 'bluetooth_printer_settings.dart';
 import '../widgets/label_paper_config.dart';
 import '../widgets/barcode_label_templates.dart';
 
-const _kNavy = Color(0xFF1A1A2E);
-const _kGold = Color(0xFFFFD166);
+const _kNavy = Color(0xFF1C2342);
+const _kGold = Color(0xFFF5B333);
 
 const _statusLabel = {
   'pending': 'รอ',
@@ -111,6 +112,7 @@ class _AdminScreenState extends State<AdminScreen>
         backgroundColor: _kNavy,
         foregroundColor: Colors.white,
         actions: [
+          const SoundToggleButton(),
           IconButton(
             tooltip: 'web admin',
             onPressed: _openWebAdmin,

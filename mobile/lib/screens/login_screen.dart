@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 import '../config.dart';
 import '../models/product.dart';
 import '../services/auth_service.dart';
+import '../theme.dart';
 import 'settings_screen.dart';
 
 class LoginScreen extends StatefulWidget {
@@ -145,146 +146,199 @@ class _LoginScreenState extends State<LoginScreen> {
   Widget build(BuildContext context) {
     final server = AppConfig.apiBase;
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('POS V2 Login'),
-        backgroundColor: const Color(0xFF1A1A2E),
-        foregroundColor: Colors.white,
-      ),
-      body: SafeArea(
-        child: Center(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.all(24),
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 440),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  const Icon(
-                    Icons.point_of_sale,
-                    size: 58,
-                    color: Color(0xFF1A1A2E),
-                  ),
-                  const SizedBox(height: 12),
-                  const Text(
-                    'เข้าสู่ระบบร้าน',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800),
-                  ),
-                  const SizedBox(height: 6),
-                  Text(
-                    'ใช้บัญชี admin / staff / kitchen ตามสิทธิ์ของร้านที่เลือก',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(fontSize: 13, color: Colors.grey[700]),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    server,
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: AppConfig.isMobileLocalhostBase
-                          ? Colors.red
-                          : Colors.grey[700],
-                    ),
-                  ),
-                  if (_error != null) ...[
-                    const SizedBox(height: 16),
-                    Container(
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFFFEBEE),
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: const Color(0xFFE57373)),
+      body: DecoratedBox(
+        decoration: const BoxDecoration(gradient: PosColors.navyGradient),
+        child: SafeArea(
+          child: Center(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 420),
+                child: Container(
+                  padding: const EdgeInsets.fromLTRB(24, 28, 24, 22),
+                  decoration: BoxDecoration(
+                    color: PosColors.surface,
+                    borderRadius: BorderRadius.circular(24),
+                    boxShadow: const [
+                      BoxShadow(
+                        color: Color(0x40101026),
+                        blurRadius: 44,
+                        offset: Offset(0, 22),
                       ),
-                      child: Text(
-                        _error!,
+                    ],
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Center(
+                        child: Container(
+                          width: 68,
+                          height: 68,
+                          decoration: BoxDecoration(
+                            color: PosColors.accentSoft,
+                            borderRadius: BorderRadius.circular(20),
+                          ),
+                          child: const Icon(
+                            Icons.point_of_sale,
+                            size: 34,
+                            color: PosColors.accentDark,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 14),
+                      const Text(
+                        'เข้าสู่ระบบร้าน',
                         textAlign: TextAlign.center,
-                        style: const TextStyle(
-                          color: Colors.red,
-                          fontWeight: FontWeight.w700,
+                        style: TextStyle(
+                          fontSize: 23,
+                          fontWeight: FontWeight.w800,
+                          color: PosColors.navy1,
                         ),
                       ),
-                    ),
-                  ],
-                  const SizedBox(height: 20),
-                  _storeSelector(),
-                  const SizedBox(height: 12),
-                  TextField(
-                    controller: _userCtrl,
-                    textInputAction: TextInputAction.next,
-                    enabled: !_loading,
-                    decoration: const InputDecoration(
-                      labelText: 'ชื่อผู้ใช้',
-                      hintText: 'admin / staff / kitchen',
-                      border: OutlineInputBorder(),
-                      prefixIcon: Icon(Icons.person),
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  TextField(
-                    controller: _passCtrl,
-                    obscureText: _obscurePassword,
-                    enabled: !_loading,
-                    textInputAction: TextInputAction.done,
-                    onSubmitted: (_) => _login(),
-                    decoration: InputDecoration(
-                      labelText: 'รหัสผ่าน',
-                      border: const OutlineInputBorder(),
-                      prefixIcon: const Icon(Icons.lock),
-                      suffixIcon: IconButton(
-                        tooltip: _obscurePassword
-                            ? 'แสดงรหัสผ่าน'
-                            : 'ซ่อนรหัสผ่าน',
-                        onPressed: () => setState(
-                          () => _obscurePassword = !_obscurePassword,
-                        ),
-                        icon: Icon(
-                          _obscurePassword
-                              ? Icons.visibility
-                              : Icons.visibility_off,
+                      const SizedBox(height: 6),
+                      const Text(
+                        'ใช้บัญชี admin / staff / kitchen ตามสิทธิ์ของร้านที่เลือก',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(fontSize: 13, color: PosColors.muted),
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        server,
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          fontSize: 11.5,
+                          color: AppConfig.isMobileLocalhostBase
+                              ? PosColors.red
+                              : PosColors.muted,
                         ),
                       ),
-                    ),
-                  ),
-                  const SizedBox(height: 14),
-                  FilledButton.icon(
-                    onPressed:
-                        _loading || _loadingStores || _selectedStoreId == null
-                        ? null
-                        : _login,
-                    style: FilledButton.styleFrom(
-                      backgroundColor: const Color(0xFF1A1A2E),
-                      foregroundColor: Colors.white,
-                      padding: const EdgeInsets.symmetric(vertical: 14),
-                    ),
-                    icon: _loading
-                        ? const SizedBox(
-                            width: 18,
-                            height: 18,
-                            child: CircularProgressIndicator(
-                              strokeWidth: 2,
-                              color: Colors.white,
+                      if (_error != null) ...[
+                        const SizedBox(height: 16),
+                        Container(
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: PosColors.redSoft,
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(color: const Color(0x40E5476B)),
+                          ),
+                          child: Text(
+                            _error!,
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(
+                              color: PosColors.redDark,
+                              fontWeight: FontWeight.w700,
+                              fontSize: 13,
                             ),
-                          )
-                        : const Icon(Icons.login),
-                    label: const Text('เข้าสู่ระบบ'),
+                          ),
+                        ),
+                      ],
+                      const SizedBox(height: 18),
+                      _storeSelector(),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: _userCtrl,
+                        textInputAction: TextInputAction.next,
+                        enabled: !_loading,
+                        decoration: const InputDecoration(
+                          labelText: 'ชื่อผู้ใช้',
+                          hintText: 'admin / staff / kitchen',
+                          prefixIcon: Icon(Icons.person_outline),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: _passCtrl,
+                        obscureText: _obscurePassword,
+                        enabled: !_loading,
+                        textInputAction: TextInputAction.done,
+                        onSubmitted: (_) => _login(),
+                        decoration: InputDecoration(
+                          labelText: 'รหัสผ่าน',
+                          prefixIcon: const Icon(Icons.lock_outline),
+                          suffixIcon: IconButton(
+                            tooltip: _obscurePassword
+                                ? 'แสดงรหัสผ่าน'
+                                : 'ซ่อนรหัสผ่าน',
+                            onPressed: () => setState(
+                              () => _obscurePassword = !_obscurePassword,
+                            ),
+                            icon: Icon(
+                              _obscurePassword
+                                  ? Icons.visibility_outlined
+                                  : Icons.visibility_off_outlined,
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 18),
+                      _primaryButton(),
+                      if (!_loadingStores && _stores.isEmpty) ...[
+                        const SizedBox(height: 10),
+                        OutlinedButton.icon(
+                          onPressed: _loadStores,
+                          icon: const Icon(Icons.refresh),
+                          label: const Text('โหลดรายชื่อร้านอีกครั้ง'),
+                        ),
+                      ],
+                      const SizedBox(height: 10),
+                      TextButton.icon(
+                        onPressed: _openServerSettings,
+                        icon: const Icon(Icons.dns_outlined, size: 18),
+                        label: const Text('สแกน / ตั้งค่า Server'),
+                      ),
+                    ],
                   ),
-                  if (!_loadingStores && _stores.isEmpty) ...[
-                    const SizedBox(height: 10),
-                    OutlinedButton.icon(
-                      onPressed: _loadStores,
-                      icon: const Icon(Icons.refresh),
-                      label: const Text('โหลดรายชื่อร้านอีกครั้ง'),
-                    ),
-                  ],
-                  const SizedBox(height: 10),
-                  OutlinedButton.icon(
-                    onPressed: _openServerSettings,
-                    icon: const Icon(Icons.search),
-                    label: const Text('สแกน / ตั้งค่า Server'),
-                  ),
-                ],
+                ),
               ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _primaryButton() {
+    final disabled = _loading || _loadingStores || _selectedStoreId == null;
+    return Opacity(
+      opacity: disabled ? 0.5 : 1,
+      child: Material(
+        color: Colors.transparent,
+        child: Ink(
+          decoration: BoxDecoration(
+            gradient: PosColors.accentGradient,
+            borderRadius: BorderRadius.circular(13),
+            boxShadow: const [
+              BoxShadow(
+                color: Color(0x59E85D04),
+                blurRadius: 20,
+                offset: Offset(0, 10),
+              ),
+            ],
+          ),
+          child: InkWell(
+            borderRadius: BorderRadius.circular(13),
+            onTap: disabled ? null : _login,
+            child: Container(
+              height: 52,
+              alignment: Alignment.center,
+              child: _loading
+                  ? const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2.4,
+                        color: Colors.white,
+                      ),
+                    )
+                  : const Text(
+                      'เข้าสู่ระบบ',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 15.5,
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: 0.3,
+                      ),
+                    ),
             ),
           ),
         ),
@@ -297,8 +351,7 @@ class _LoginScreenState extends State<LoginScreen> {
       return const InputDecorator(
         decoration: InputDecoration(
           labelText: 'เลือกร้านที่จะเข้าใช้งาน',
-          border: OutlineInputBorder(),
-          prefixIcon: Icon(Icons.storefront),
+          prefixIcon: Icon(Icons.storefront_outlined),
         ),
         child: Row(
           children: [
@@ -317,8 +370,7 @@ class _LoginScreenState extends State<LoginScreen> {
       return const InputDecorator(
         decoration: InputDecoration(
           labelText: 'เลือกร้านที่จะเข้าใช้งาน',
-          border: OutlineInputBorder(),
-          prefixIcon: Icon(Icons.storefront),
+          prefixIcon: Icon(Icons.storefront_outlined),
         ),
         child: Text('ยังโหลดรายชื่อร้านไม่ได้'),
       );
@@ -328,8 +380,7 @@ class _LoginScreenState extends State<LoginScreen> {
       isExpanded: true,
       decoration: const InputDecoration(
         labelText: 'เลือกร้านที่จะเข้าใช้งาน',
-        border: OutlineInputBorder(),
-        prefixIcon: Icon(Icons.storefront),
+        prefixIcon: Icon(Icons.storefront_outlined),
       ),
       items: [
         for (final store in _stores)

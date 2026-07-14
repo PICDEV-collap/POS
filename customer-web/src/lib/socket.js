@@ -2,7 +2,7 @@
 
 import { io } from 'socket.io-client';
 import { apiBase } from './api';
-import { isSafariBrowser, storageGet, storageSet } from './browser';
+import { storageGet, storageSet } from './browser';
 
 const CLIENT_KEY = 'pos_v2_socket_client_id';
 const EVENT_KEY = 'pos_v2_socket_last_event_id';
@@ -112,11 +112,12 @@ function installRealtimeHandlers(socket) {
 
 export function getSocket() {
   if (!_socket) {
-    const safari = isSafariBrowser();
     _socket = io(apiBase, {
-      // Safari is more sensitive to WebSocket upgrades through ngrok/Caddy and
-      // captive Wi-Fi. Start with polling there, then upgrade when possible.
-      transports: safari ? ['polling', 'websocket'] : ['websocket', 'polling'],
+      // The web is served same-origin behind `next start`, which can only proxy
+      // Socket.io *polling* (a route handler can't upgrade WebSockets). Start on
+      // polling everywhere so the connection establishes immediately; `upgrade`
+      // still lets it move to WS if a real WS-capable proxy (Caddy) fronts it.
+      transports: ['polling', 'websocket'],
       tryAllTransports: true,
       upgrade: true,
       rememberUpgrade: false,

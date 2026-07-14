@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { getAuth, authFetch, clearAuth, logout } from '@/lib/auth';
 import { useRealtimeRecovery } from '@/lib/realtimeRecovery';
+import { useOrderSounds, SoundToggleButton } from '@/lib/sound';
 import { pushSupported, getSubscriptionState, subscribe as pushSubscribe, unsubscribe as pushUnsubscribe, sendTest as pushSendTest } from '@/lib/push';
 
 const ACTIVE_STATUSES = ['pending', 'cooking', 'served'];
@@ -17,9 +18,9 @@ const STATUS_LABEL = {
 };
 
 const STATUS_COLOR = {
-  pending: '#ff6b6b',
-  cooking: '#ffd166',
-  served: '#06d6a0',
+  pending: '#ff7b8a',
+  cooking: '#f5b333',
+  served: '#0fb98c',
   paid: '#888',
 };
 
@@ -46,9 +47,9 @@ function fulfillmentSummary(order) {
 }
 function fulfillmentBadge(order) {
   const summary = fulfillmentSummary(order);
-  if (summary === 'mixed') return { text: '🍽️ + 🛍️ ทานที่ร้านและกลับบ้าน', color: '#ffd166', bg: 'rgba(255,209,102,.16)' };
-  if (summary === 'takeaway') return { text: '🛍️ กลับบ้าน', color: '#f4a261', bg: 'rgba(244,162,97,.16)' };
-  return { text: '🍽️ ทานที่ร้าน', color: '#06d6a0', bg: 'rgba(6,214,160,.13)' };
+  if (summary === 'mixed') return { text: '🍽️ + 🛍️ ทานที่ร้านและกลับบ้าน', color: '#f5b333', bg: 'rgba(245,179,51,.16)' };
+  if (summary === 'takeaway') return { text: '🛍️ กลับบ้าน', color: '#ff9d5c', bg: 'rgba(232,93,4,.18)' };
+  return { text: '🍽️ ทานที่ร้าน', color: '#0fb98c', bg: 'rgba(15,185,140,.14)' };
 }
 
 export default function KitchenPage() {
@@ -60,11 +61,14 @@ export default function KitchenPage() {
 
   const reload = useCallback(async () => {
     try {
-      const list = await authFetch('/api/orders');
-      const detailed = await Promise.all(
-        list.map((o) => authFetch(`/api/orders/${o.id}`))
-      );
-      setOrders(detailed);
+      // One request with embedded line items (was: 1 list + N detail fetches
+      // every refresh). Falls back to the fan-out only if the backend
+      // predates include_items.
+      let list = await authFetch('/api/orders?include_items=1');
+      if (list.length && !Array.isArray(list[0].items)) {
+        list = await Promise.all(list.map((o) => authFetch(`/api/orders/${o.id}`)));
+      }
+      setOrders(list);
       setError(null);
     } catch (e) {
       setError(e.message);
@@ -72,6 +76,7 @@ export default function KitchenPage() {
   }, []);
 
   useRealtimeRecovery(reload, { intervalMs: 10000 });
+  useOrderSounds({ storeId: auth?.user?.store_id });
 
   useEffect(() => {
     const a = getAuth();
@@ -153,22 +158,32 @@ export default function KitchenPage() {
   const recentDone = orders.filter((o) => o.status === 'paid').slice(0, 8);
 
   return (
-    <main className="pos-app-shell kitchen-page-shell" style={{ minHeight: 'var(--app-height, 100vh)', background: '#0f0f1a', color: 'white', fontFamily: 'system-ui, sans-serif' }}>
+    <main className="pos-app-shell kitchen-page-shell" style={{ minHeight: 'var(--app-height, 100vh)', background: 'radial-gradient(1000px 500px at 80% -10%, rgba(44,53,103,.5), transparent 60%), #0c0f20', color: 'white', fontFamily: 'var(--pos-font, system-ui, sans-serif)' }}>
       <div className="pos-topbar kitchen-topbar" style={{
-        background: '#16213e', padding: '14px 18px', display: 'flex',
+        background: 'linear-gradient(135deg,#161c38,#222a52)', padding: '14px 18px', display: 'flex',
         justifyContent: 'space-between', alignItems: 'center',
-        position: 'sticky', top: 0, zIndex: 50, boxShadow: '0 2px 12px rgba(0,0,0,.4)'
+        position: 'sticky', top: 0, zIndex: 50,
+        borderBottom: '1px solid rgba(255,255,255,.07)',
+        boxShadow: '0 8px 28px rgba(0,0,0,.5)'
       }}>
         <div>
-          <div style={{ fontWeight: 800, fontSize: 19 }}>🍳 ห้องครัว</div>
-          <div style={{ opacity: .45, fontSize: 12 }}>{active.length} ออเดอร์รอดำเนินการ · {auth.user.full_name}</div>
+          <div style={{ fontWeight: 800, fontSize: 19, letterSpacing: .2 }}>🍳 ห้องครัว</div>
+          <div style={{ opacity: .55, fontSize: 12, marginTop: 1 }}>
+            <span style={{
+              display: 'inline-block', background: active.length ? 'rgba(245,179,51,.18)' : 'rgba(15,185,140,.16)',
+              color: active.length ? '#f5b333' : '#0fb98c',
+              borderRadius: 999, padding: '1px 9px', fontWeight: 700, marginRight: 6,
+            }}>{active.length} ออเดอร์</span>
+            {auth.user.full_name}
+          </div>
         </div>
         <div className="kitchen-topbar-actions" style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+          <SoundToggleButton />
           <button onClick={togglePush}
                   title="เปิด/ปิดการแจ้งเตือน"
-                  style={{ background: 'rgba(255,209,102,.15)', color: '#ffd166',
-                           border: '1px solid rgba(255,209,102,.25)', padding: '7px 12px',
-                           borderRadius: 20, fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
+                  style={{ background: 'rgba(245,179,51,.15)', color: '#f5b333',
+                           border: '1px solid rgba(245,179,51,.3)', padding: '8px 13px',
+                           borderRadius: 999, fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
             {pushStatus === 'subscribed' ? '🔔 เปิด' :
               pushStatus === 'denied' ? '🔕 ถูกปิด' :
               pushStatus === 'unsupported' ? '🚫 ไม่รองรับ' : '🔕 ปิด'}
@@ -177,22 +192,22 @@ export default function KitchenPage() {
             <button onClick={testPush}
                     title="ส่ง test notification"
                     style={{ background: 'rgba(255,255,255,.08)', color: 'white',
-                             border: '1px solid rgba(255,255,255,.15)', padding: '7px 10px',
-                             borderRadius: 20, fontSize: 12, cursor: 'pointer' }}>
+                             border: '1px solid rgba(255,255,255,.15)', padding: '8px 11px',
+                             borderRadius: 999, fontSize: 12, cursor: 'pointer' }}>
               ทดสอบ
             </button>
           )}
           <button onClick={handleLogout}
-                  style={{ background: 'rgba(239,71,111,.15)', color: '#ef476f',
-                           border: '1px solid rgba(239,71,111,.25)', padding: '7px 14px',
-                           borderRadius: 20, fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
+                  style={{ background: 'rgba(229,71,107,.16)', color: '#ff9eb5',
+                           border: '1px solid rgba(229,71,107,.35)', padding: '8px 15px',
+                           borderRadius: 999, fontSize: 12.5, fontWeight: 700, cursor: 'pointer' }}>
             🚪 ออก
           </button>
         </div>
       </div>
 
       {error && (
-        <div style={{ background: 'rgba(239,71,111,.15)', color: '#ef476f',
+        <div role="alert" style={{ background: 'rgba(229,71,107,.16)', color: '#ff8aa4',
                       padding: '8px 14px', fontSize: 13 }}>
           {error}
         </div>
@@ -210,11 +225,18 @@ export default function KitchenPage() {
             const stColor = STATUS_COLOR[o.status] || '#666';
             const next = NEXT_STATUS[o.status];
             const orderFulfillment = fulfillmentBadge(o);
+            // Freshly arrived orders pulse a few times to catch the eye —
+            // pairs with the new-order chime. Runs once per card mount.
+            const isFresh = o.status === 'pending'
+              && Date.now() - new Date(o.created_at).getTime() < 90000;
             return (
               <div key={o.id}
                    className="kitchen-order-card"
-                   style={{ background: 'rgba(255,255,255,.04)', borderRadius: 16, padding: 16,
-                            borderLeft: `4px solid ${stColor}` }}>
+                   style={{ background: 'rgba(255,255,255,.05)', borderRadius: 18, padding: 16,
+                            border: '1px solid rgba(255,255,255,.08)',
+                            borderLeft: `4px solid ${stColor}`,
+                            animation: isFresh ? 'posNewOrderPulse 1.5s ease-out 3' : 'none',
+                            boxShadow: '0 10px 30px rgba(0,0,0,.3)' }}>
                 <div className="kitchen-order-header" style={{ display: 'flex', justifyContent: 'space-between',
                               alignItems: 'center', marginBottom: 10 }}>
                   <div>
@@ -231,13 +253,14 @@ export default function KitchenPage() {
                   }}>
                     {orderFulfillment.text}
                   </div>
-                  <span style={{ background: stColor, color: '#1a1a2e', borderRadius: 20,
-                                 padding: '4px 12px', fontSize: 12, fontWeight: 700 }}>
+                  <span style={{ background: stColor, color: '#10142b', borderRadius: 999,
+                                 padding: '5px 13px', fontSize: 12, fontWeight: 800,
+                                 boxShadow: `0 4px 14px ${stColor}55` }}>
                     {STATUS_LABEL[o.status] || o.status}
                   </span>
                 </div>
 
-                {o.items.map((it) => {
+                {(o.items || []).map((it) => {
                   const f = itemFulfillment(o, it);
                   return (
                   <div key={it.id} style={{ padding: '6px 0', borderBottom: '1px solid rgba(255,255,255,.05)',
@@ -247,17 +270,17 @@ export default function KitchenPage() {
                       <span style={{ opacity: .5 }}>฿{Number(it.unit_price * it.quantity).toFixed(0)}</span>
                     </div>
                     {Array.isArray(it.options_selected) && it.options_selected.length > 0 && (
-                      <div style={{ fontSize: 12, color: '#06d6a0', marginTop: 2 }}>
+                      <div style={{ fontSize: 12, color: '#0fb98c', marginTop: 2 }}>
                         ▸ {it.options_selected.map((o) => o.value).join(' · ')}
                       </div>
                     )}
                     {it.note && (
-                      <div style={{ fontSize: 12, color: '#ffd166', marginTop: 2 }}>📝 {it.note}</div>
+                      <div style={{ fontSize: 12, color: '#f5b333', marginTop: 2 }}>📝 {it.note}</div>
                     )}
                     <span style={{
                       display: 'inline-block', marginTop: 4,
-                      background: f === 'takeaway' ? 'rgba(244,162,97,.16)' : 'rgba(6,214,160,.13)',
-                      color: f === 'takeaway' ? '#f4a261' : '#06d6a0',
+                      background: f === 'takeaway' ? 'rgba(232,93,4,.18)' : 'rgba(15,185,140,.14)',
+                      color: f === 'takeaway' ? '#ff9d5c' : '#0fb98c',
                       borderRadius: 999, padding: '2px 8px',
                       fontSize: 11, fontWeight: 800,
                     }}>
@@ -267,8 +290,8 @@ export default function KitchenPage() {
                 );})}
 
                 {o.note && (
-                  <div style={{ marginTop: 8, background: 'rgba(255,209,102,.1)',
-                                borderRadius: 8, padding: '6px 10px', fontSize: 13, color: '#ffd166' }}>
+                  <div style={{ marginTop: 8, background: 'rgba(245,179,51,.12)',
+                                borderRadius: 8, padding: '6px 10px', fontSize: 13, color: '#f5b333' }}>
                     📝 {o.note}
                   </div>
                 )}
@@ -278,7 +301,7 @@ export default function KitchenPage() {
                     <button
                       onClick={() => changeStatus(o.id, next.value)}
                       style={{ flex: 1, background: STATUS_COLOR[next.value] || '#aaa',
-                               color: '#1a1a2e', border: 'none', borderRadius: 10,
+                               color: '#10142b', border: 'none', borderRadius: 10,
                                padding: 11, fontWeight: 700, fontSize: 14, cursor: 'pointer' }}
                     >
                       {next.label}
@@ -295,7 +318,7 @@ export default function KitchenPage() {
                   </button>
                   <button
                     onClick={() => changeStatus(o.id, 'cancelled')}
-                    style={{ background: 'rgba(239,71,111,.2)', color: '#ef476f',
+                    style={{ background: 'rgba(229,71,107,.2)', color: '#ff8aa4',
                              border: 'none', borderRadius: 10, padding: '11px 14px',
                              fontSize: 13, cursor: 'pointer' }}
                   >

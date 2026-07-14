@@ -6,6 +6,8 @@ const { loadOrder } = require('./orders');
 const { loadSettings } = require('./settings');
 const { emit } = require('../socket');
 const logger = require('../lib/logger');
+const { resolveStoreId } = require('../lib/storeScope');
+const { paymentQrMeta } = require('../lib/thaiQrPayment');
 
 const router = express.Router();
 
@@ -329,6 +331,68 @@ router.get('/order/:id', authRequired, async (req, res) => {
     [req.params.id]
   );
   res.json(rows);
+});
+
+// Combined bill for a table: sum of its unpaid orders + one PromptPay/Thai QR
+// for that total, so a customer can scan once to pay several rounds.
+router.get('/table/:tableId', authRequired, requireRole('admin', 'staff'), async (req, res, next) => {
+  try {
+    const storeId = resolveStoreId(req);
+    const tableId = Number.parseInt(req.params.tableId, 10);
+    if (!Number.isInteger(tableId) || tableId <= 0) {
+      return res.status(400).json({ error: 'invalid table' });
+    }
+    const { rows: tRows } = await db.query(
+      'SELECT id, name, code FROM tables WHERE id = $1 AND store_id = $2',
+      [tableId, storeId]
+    );
+    const table = tRows[0];
+    if (!table) return res.status(404).json({ error: 'table not found' });
+
+    // Only the current business day's unpaid orders — a table's bill should
+    // never bundle in stale un-settled orders from previous days.
+    const { rows: orders } = await db.query(
+      `SELECT id, daily_seq, total_amount, status, created_at
+         FROM orders
+        WHERE table_id = $1 AND store_id = $2
+          AND status NOT IN ('paid', 'cancelled')
+          AND business_date = (NOW() AT TIME ZONE 'Asia/Bangkok')::date
+        ORDER BY created_at`,
+      [tableId, storeId]
+    );
+    const total = Number(
+      orders.reduce((sum, o) => sum + Number(o.total_amount || 0), 0).toFixed(2)
+    );
+
+    const settings = await loadSettings(storeId);
+    // PromptPay ignores the order id; for the merchant/ThaiQR type we pass a
+    // table-scoped ref so the combined bill still carries a reference.
+    const meta = total > 0
+      ? paymentQrMeta({ id: `T${tableId}`, total_amount: total }, settings)
+      : null;
+
+    res.json({
+      table_id: table.id,
+      table_name: table.name,
+      order_ids: orders.map((o) => o.id),
+      order_count: orders.length,
+      total,
+      currency: settings.currency || '฿',
+      qr: meta
+        ? {
+            enabled: true,
+            payload: meta.payload,
+            type: meta.type,
+            label: meta.label,
+            account_name: meta.accountName,
+            account_id: meta.accountId,
+            include_amount: meta.includeAmount,
+          }
+        : { enabled: false },
+    });
+  } catch (e) {
+    next(e);
+  }
 });
 
 module.exports = { router, recordPaymentConfirmation };

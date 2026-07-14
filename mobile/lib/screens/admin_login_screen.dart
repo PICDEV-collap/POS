@@ -114,7 +114,7 @@ class _AdminLoginScreenState extends State<AdminLoginScreen> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Admin Login'),
-        backgroundColor: const Color(0xFF1A1A2E),
+        backgroundColor: const Color(0xFF1C2342),
         foregroundColor: Colors.white,
       ),
       body: Center(
@@ -128,7 +128,7 @@ class _AdminLoginScreenState extends State<AdminLoginScreen> {
                 const Icon(
                   Icons.admin_panel_settings,
                   size: 56,
-                  color: Color(0xFF1A1A2E),
+                  color: Color(0xFF1C2342),
                 ),
                 const SizedBox(height: 12),
                 const Text(
@@ -177,7 +177,7 @@ class _AdminLoginScreenState extends State<AdminLoginScreen> {
                       ? null
                       : _login,
                   style: FilledButton.styleFrom(
-                    backgroundColor: const Color(0xFF1A1A2E),
+                    backgroundColor: const Color(0xFF1C2342),
                     foregroundColor: Colors.white,
                     padding: const EdgeInsets.symmetric(vertical: 14),
                   ),

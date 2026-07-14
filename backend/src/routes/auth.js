@@ -3,7 +3,7 @@ const bcrypt = require('bcrypt');
 const db = require('../db');
 const { signToken, authRequired } = require('../middleware/auth');
 const { parseStoreIds } = require('../lib/storeScope');
-const { clientIp } = require('../lib/accessBoundary');
+const { clientIp, isLocalControlRequest } = require('../lib/accessBoundary');
 const { assertNotLocked, recordFailure, clearAttempts } = require('../lib/loginGuard');
 const {
   issueRefreshToken,
@@ -12,6 +12,12 @@ const {
 } = require('../lib/refreshTokens');
 
 const router = express.Router();
+
+// Fixed hash used to equalize bcrypt timing on the unknown/inactive-user path,
+// so login latency cannot be used to enumerate valid usernames. Cost matches
+// the value used when hashing real passwords.
+const BCRYPT_COST = parseInt(process.env.BCRYPT_COST, 10) || 12;
+const DUMMY_PASSWORD_HASH = bcrypt.hashSync('pos-v2-nonmatching-dummy', BCRYPT_COST);
 
 function selectedStoreId(raw) {
   if (raw === undefined || raw === null || raw === '') return null;
@@ -113,7 +119,10 @@ router.post('/login', async (req, res) => {
   );
   const user = rows[0];
   if (!user || !user.is_active) {
-    await recordFailure(normalizedUser);
+    // Run a throwaway compare so the response time matches the valid-user path,
+    // and do NOT persist a lockout row for non-existent usernames (avoids
+    // letting attackers spam login_attempts or lock out arbitrary names).
+    await bcrypt.compare(String(password), DUMMY_PASSWORD_HASH);
     return res.status(401).json({ error: 'invalid credentials' });
   }
   const ok = await bcrypt.compare(password, user.password_hash);
@@ -173,6 +182,14 @@ router.post('/staff-session', async (req, res) => {
   const disabled = String(process.env.STAFF_AUTO_SESSION_DISABLED || '').toLowerCase();
   if (disabled === '1' || disabled === 'true') {
     return res.status(403).json({ error: 'staff auto session disabled' });
+  }
+  // Passwordless auto-session must never be reachable from outside the server
+  // LAN. On an internet-exposed deployment (e.g. via a tunnel) this is the
+  // backstop that prevents handing staff tokens to remote clients even if the
+  // disable flag above is ever dropped.
+  if (!isLocalControlRequest(req)) {
+    console.warn(`[auth] staff auto-session blocked outside LAN ip=${clientIp(req)}`);
+    return res.status(403).json({ error: 'staff auto session requires server LAN' });
   }
   const requestedStoreId = selectedStoreId(req.body?.store_id);
   if (requestedStoreId && !(await activeStore(requestedStoreId))) {

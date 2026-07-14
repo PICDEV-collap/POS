@@ -10,6 +10,8 @@ import '../services/socket_service.dart';
 import '../services/offline_repository.dart';
 import '../services/print_helper.dart';
 import '../services/bluetooth_printer_service.dart';
+import '../services/sound_service.dart';
+import '../theme.dart';
 import 'bluetooth_printer_settings.dart';
 
 const _activeStatuses = {'pending', 'cooking', 'served'};
@@ -237,19 +239,23 @@ class _KitchenScreenState extends State<KitchenScreen>
         .toList();
 
     return Scaffold(
-      backgroundColor: const Color(0xFF0F0F1A),
+      backgroundColor: PosColors.darkBg,
       body: SafeArea(
         child: Column(
           children: [
             Container(
               padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
               decoration: const BoxDecoration(
-                color: Color(0xFF16213E),
+                gradient: LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [PosColors.darkSurface, PosColors.darkSurface2],
+                ),
                 boxShadow: [
                   BoxShadow(
-                    color: Colors.black26,
-                    blurRadius: 12,
-                    offset: Offset(0, 2),
+                    color: Colors.black38,
+                    blurRadius: 16,
+                    offset: Offset(0, 4),
                   ),
                 ],
               ),
@@ -319,6 +325,7 @@ class _KitchenScreenState extends State<KitchenScreen>
                         ),
                     ],
                   ),
+                  const SoundToggleButton(color: Colors.white70),
                   IconButton(
                     onPressed: () => unawaited(_reload()),
                     tooltip: 'Reload',
@@ -411,9 +418,21 @@ class _OrderCard extends StatelessWidget {
 
     return Container(
       decoration: BoxDecoration(
-        color: Colors.white.withOpacity(.04),
-        borderRadius: BorderRadius.circular(16),
-        border: Border(left: BorderSide(color: stColor, width: 4)),
+        color: Colors.white.withValues(alpha: .05),
+        borderRadius: BorderRadius.circular(18),
+        border: Border(
+          top: const BorderSide(color: Color(0x14FFFFFF)),
+          right: const BorderSide(color: Color(0x14FFFFFF)),
+          bottom: const BorderSide(color: Color(0x14FFFFFF)),
+          left: BorderSide(color: stColor, width: 4),
+        ),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x4D000000),
+            blurRadius: 30,
+            offset: Offset(0, 10),
+          ),
+        ],
       ),
       padding: const EdgeInsets.all(14),
       child: Column(

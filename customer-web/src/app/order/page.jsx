@@ -15,20 +15,23 @@ export default function OrderPageWrapper() {
   );
 }
 
-const NAVY = '#1a1a2e';
-const NAVY2 = '#16213e';
-const BEIGE = '#f8f5f0';
-const GOLD = '#ffd166';
-const ORANGE = '#e67e22';
-const ORANGE2 = '#d35400';
-const RED = '#e63946';
-const GREEN = '#06d6a0';
+// Mirrors the --pos-* design tokens in globals.css. Kept as literal hex here
+// (not var()) because several styles derive alpha variants by string suffixing
+// (e.g. `${GOLD}22`), which CSS variables cannot do. Change both together.
+const NAVY = '#1c2342';   // --pos-navy-1
+const NAVY2 = '#2c3567';  // --pos-navy-2
+const BEIGE = '#f3f4fa';  // --pos-bg
+const GOLD = '#f5b333';   // --pos-gold
+const ORANGE = '#e85d04'; // --pos-accent
+const ORANGE2 = '#c84f00';// --pos-accent-dark
+const RED = '#e5476b';    // --pos-red
+const GREEN = '#0fb98c';  // --pos-green
 
 const STATUS_LABEL = {
   pending: '⏳ รอยืนยัน', cooking: '🍳 กำลังทำ', served: '✅ พร้อมเสิร์ฟ', paid: '💰 ชำระแล้ว', cancelled: '❌ ยกเลิก',
 };
 const STATUS_COLOR = {
-  pending: RED, cooking: '#f4a261', served: GREEN, paid: '#aaa', cancelled: '#999',
+  pending: RED, cooking: '#f5a623', served: GREEN, paid: '#aaa', cancelled: '#999',
 };
 
 function getOrCreateCustomerKey() {
@@ -60,6 +63,7 @@ function OrderPage() {
   const [error, setError] = useState(null);
   const [variantModal, setVariantModal] = useState(null); // product to pick variant for
   const [success, setSuccess] = useState(null);
+  const [callState, setCallState] = useState('idle'); // idle | sending | sent
   const [customerKey, setCustomerKey] = useState(null);
   const [customerSessionToken, setCustomerSessionToken] = useState(null);
   const [ordering, setOrdering] = useState(null);
@@ -105,15 +109,22 @@ function OrderPage() {
     let alive = true;
     async function loadOrders() {
       try {
-        // We don't have a public per-table endpoint that lists orders, so re-fetch each via token+id.
-        // Workaround: store order IDs in localStorage when placing.
+        // Order ids this phone placed live in localStorage; fetch them all in
+        // one batch call instead of one request per order.
         const ids = storageJson(`pos_orders_${table.id}`, []);
-        const orders = await Promise.all(ids.map((id) => api.getOrder(id, token).catch(() => null)));
-        if (alive) setTableOrders(orders.filter(Boolean).filter((o) => o.status !== 'paid' && o.status !== 'cancelled'));
+        if (!ids.length) { if (alive) setTableOrders([]); return; }
+        const res = await api.getTableOrders(token, ids);
+        const orders = Array.isArray(res?.orders) ? res.orders : [];
+        if (alive) setTableOrders(orders.filter((o) => o.status !== 'paid' && o.status !== 'cancelled'));
       } catch {}
     }
     loadOrders();
-    const t = setInterval(loadOrders, 8000);
+    // Pause polling while the tab is hidden — socket events + the next tick
+    // after returning to the foreground keep the list fresh.
+    const t = setInterval(() => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      loadOrders();
+    }, 8000);
     return () => { alive = false; clearInterval(t); };
   }, [table, token]);
 
@@ -360,6 +371,21 @@ function OrderPage() {
     }
   }
 
+  async function handleCallStaff() {
+    if (callState !== 'idle' || !token) return;
+    setCallState('sending');
+    try {
+      await api.callStaff(token, 'bill');
+      setCallState('sent');
+      // Re-enable after a cooldown so staff aren't spammed but the guest can
+      // call again if no one comes.
+      setTimeout(() => setCallState('idle'), 30000);
+    } catch (e) {
+      setError(e.message);
+      setCallState('idle');
+    }
+  }
+
   if (error && !table) {
     return (
       <main className="max-w-md mx-auto p-6 text-center" style={{ background: BEIGE, minHeight: 'var(--app-height, 100vh)' }}>
@@ -377,31 +403,41 @@ function OrderPage() {
     <main className="customer-order-shell" style={{ paddingBottom: totalQty > 0 ? 430 : 24 }}>
       {/* Header navy gradient */}
       <div style={{
-        background: `linear-gradient(135deg, ${NAVY}, ${NAVY2})`,
-        color: 'white', padding: '18px 18px 24px', position: 'relative', overflow: 'hidden',
+        background: `radial-gradient(560px 240px at 90% -40%, rgba(232,93,4,.35), transparent 65%), linear-gradient(135deg, #181e3a, ${NAVY2})`,
+        color: 'white', padding: '20px 18px 26px', position: 'relative', overflow: 'hidden',
+        borderRadius: '0 0 24px 24px',
       }}>
         <div style={{
-          position: 'absolute', top: -20, right: -20, width: 120, height: 120,
-          borderRadius: '50%', background: 'rgba(255,209,102,.08)', pointerEvents: 'none',
+          position: 'absolute', top: -30, right: -30, width: 150, height: 150,
+          borderRadius: '50%', background: 'rgba(245,179,51,.1)', pointerEvents: 'none',
         }} />
-        <div style={{ fontSize: 11, opacity: .5, letterSpacing: 3, marginBottom: 6 }}>
+        <div style={{ fontSize: 11, opacity: .55, letterSpacing: 3, marginBottom: 8 }}>
           {esc(restaurant.name).toUpperCase()}
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <span style={{ fontSize: 32 }}>{restaurant.logo || '🍽️'}</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <span style={{
+            fontSize: 28, width: 54, height: 54, display: 'grid', placeItems: 'center',
+            background: 'rgba(255,255,255,.1)', borderRadius: 16,
+            boxShadow: 'inset 0 0 0 1px rgba(255,255,255,.14)',
+          }}>{restaurant.logo || '🍽️'}</span>
           <div>
-            <div style={{ fontWeight: 800, fontSize: 20 }}>{restaurant.name}</div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 2 }}>
+            <div style={{ fontWeight: 800, fontSize: 21, letterSpacing: .2 }}>{restaurant.name}</div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 5 }}>
               {effectiveOrderType === 'takeaway' ? (
                 <>
                   <span style={{
-                    background: 'rgba(230,126,34,.25)', color: '#f0a868',
-                    borderRadius: 20, padding: '2px 10px', fontSize: 12, fontWeight: 700,
+                    background: 'rgba(232,93,4,.3)', color: '#ffb380',
+                    borderRadius: 999, padding: '3px 12px', fontSize: 12, fontWeight: 700,
+                    boxShadow: 'inset 0 0 0 1px rgba(232,93,4,.4)',
                   }}>🛍️ กลับบ้าน</span>
-                  <span style={{ opacity: .7, fontSize: 13 }}>{customerName || table.name}</span>
+                  <span style={{ opacity: .75, fontSize: 13 }}>{customerName || table.name}</span>
                 </>
               ) : (
-                <span style={{ opacity: .6, fontSize: 13 }}>{table.name}</span>
+                <span style={{
+                  background: 'rgba(255,255,255,.12)', borderRadius: 999,
+                  padding: '3px 12px', fontSize: 12.5, fontWeight: 600, opacity: .95,
+                  boxShadow: 'inset 0 0 0 1px rgba(255,255,255,.16)',
+                }}>🪑 {table.name}</span>
               )}
             </div>
           </div>
@@ -410,7 +446,7 @@ function OrderPage() {
 
       {/* Ordering guard status */}
       {!orderingAllowed && (
-        <div style={{
+        <div role="alert" style={{
           background: '#fff0f0', border: `1.5px solid ${RED}55`,
           margin: '10px 14px 0', borderRadius: 12, padding: '12px 14px',
           color: '#b4232e', fontSize: 13, fontWeight: 700,
@@ -478,6 +514,34 @@ function OrderPage() {
             {restaurant.currency}{grandTotal.toFixed(0)}{' '}
             <span style={{ fontWeight: 500, opacity: .7, fontSize: 12 }}>ดูรายละเอียด ›</span>
           </span>
+        </div>
+      )}
+
+      {/* Call staff to collect the bill */}
+      {tableOrders.length > 0 && (
+        <div style={{ margin: '10px 14px 0' }}>
+          <button
+            type="button"
+            onClick={handleCallStaff}
+            disabled={callState !== 'idle'}
+            aria-label="เรียกพนักงานมาเก็บเงินที่โต๊ะ"
+            style={{
+              width: '100%', minHeight: 52, border: 'none', borderRadius: 14,
+              background: callState === 'sent'
+                ? `linear-gradient(135deg, ${GREEN}, #077a5d)`
+                : `linear-gradient(135deg, ${NAVY}, ${NAVY2})`,
+              color: '#fff', fontWeight: 800, fontSize: 15.5,
+              cursor: callState === 'idle' ? 'pointer' : 'default',
+              opacity: callState === 'sending' ? 0.7 : 1,
+              boxShadow: '0 8px 20px rgba(28,35,66,.28)',
+              transition: 'background .2s ease',
+            }}>
+            {callState === 'sent'
+              ? '✅ เรียกแล้ว พนักงานกำลังไป'
+              : callState === 'sending'
+                ? 'กำลังเรียก...'
+                : '🔔 เรียกพนักงานเก็บเงิน'}
+          </button>
         </div>
       )}
 
@@ -557,6 +621,7 @@ function OrderPage() {
                   <button onClick={() => onAddProduct(p)}
                     disabled={!orderingAllowed}
                     className="customer-menu-add"
+                    aria-label={`เพิ่ม ${p.name} ลงตะกร้า`}
                     style={{ opacity: orderingAllowed ? 1 : .35 }}>+</button>
                 </div>
               </div>
@@ -676,8 +741,11 @@ function OrderPage() {
       {tab === 'menu' && totalQty > 0 && (
         <div style={{
           position: 'fixed', bottom: 0, left: '50%', transform: 'translateX(-50%)',
-          width: '100%', maxWidth: 480, padding: '10px 14px 18px',
-          background: 'white', boxShadow: '0 -4px 20px rgba(0,0,0,.12)', zIndex: 50,
+          width: '100%', maxWidth: 480, padding: '12px 14px 18px',
+          background: 'rgba(255,255,255,.97)', backdropFilter: 'blur(10px)',
+          WebkitBackdropFilter: 'blur(10px)',
+          borderRadius: '22px 22px 0 0', border: '1px solid #e6e8f2', borderBottom: 'none',
+          boxShadow: '0 -10px 36px rgba(24,28,52,.16)', zIndex: 50,
         }}>
           {isTakeawayPoint ? (
             <div style={{
@@ -791,19 +859,22 @@ function OrderPage() {
               outline: 'none', boxSizing: 'border-box',
             }}
           />
-          {error && <p style={{ color: 'red', fontSize: 12, margin: '0 0 6px' }}>{error}</p>}
+          {error && <p role="alert" style={{ color: 'red', fontSize: 12, margin: '0 0 6px' }}>{error}</p>}
           <button
             disabled={submitting || cartItems.length === 0 || !orderingAllowed}
             onClick={submit}
             style={{
               width: '100%',
               background: cartFulfillmentSummary === 'takeaway' || cartFulfillmentSummary === 'mixed'
-                ? `linear-gradient(135deg, ${ORANGE}, ${ORANGE2})`
-                : `linear-gradient(135deg, ${NAVY}, #203a43)`,
-              color: 'white', border: 'none', borderRadius: 13, padding: 14,
-              fontWeight: 700, fontSize: 15, display: 'flex', justifyContent: 'space-between',
+                ? `linear-gradient(135deg, ${ORANGE}, #f0750f)`
+                : `linear-gradient(135deg, ${NAVY}, ${NAVY2})`,
+              color: 'white', border: 'none', borderRadius: 14, padding: '15px 16px',
+              fontWeight: 800, fontSize: 15.5, display: 'flex', justifyContent: 'space-between',
               cursor: orderingAllowed ? 'pointer' : 'not-allowed',
               opacity: submitting || !orderingAllowed ? .5 : 1,
+              boxShadow: cartFulfillmentSummary === 'takeaway' || cartFulfillmentSummary === 'mixed'
+                ? '0 10px 24px rgba(232,93,4,.35)'
+                : '0 10px 24px rgba(28,35,66,.35)',
             }}>
             <span>{cartFulfillmentSummary === 'mixed' ? '🍽️ + 🛍️ ยืนยันออเดอร์' : cartFulfillmentSummary === 'takeaway' ? '🛍️ สั่งกลับบ้าน' : '🛒 ยืนยันออเดอร์'} · {totalQty} รายการ</span>
             <span>{restaurant.currency}{totalPrice.toFixed(0)}</span>
@@ -919,9 +990,15 @@ function ProductPicker({ product, currency, onCancel, onConfirm }) {
       <div onClick={(e) => e.stopPropagation()}
         style={{
           background: 'white', width: '100%', maxWidth: 480, margin: '0 auto',
-          borderRadius: '16px 16px 0 0', padding: 20, maxHeight: '85vh', overflowY: 'auto',
+          borderRadius: '24px 24px 0 0', padding: '12px 20px 20px',
+          maxHeight: '85vh', overflowY: 'auto',
+          boxShadow: '0 -16px 48px rgba(13,16,38,.3)',
         }}>
-        <h3 style={{ fontWeight: 700, fontSize: 18, marginBottom: 12 }}>
+        <div style={{
+          width: 44, height: 5, borderRadius: 999, background: '#e2e4ee',
+          margin: '0 auto 14px',
+        }} />
+        <h3 style={{ fontWeight: 800, fontSize: 19, marginBottom: 12, color: NAVY }}>
           {product.emoji || ''} {product.name}
         </h3>
 
@@ -936,7 +1013,7 @@ function ProductPicker({ product, currency, onCancel, onConfirm }) {
                   style={{
                     width: '100%', display: 'flex', justifyContent: 'space-between',
                     padding: 12, marginBottom: 6,
-                    background: active ? NAVY : '#f8f5f0',
+                    background: active ? NAVY : '#f3f4fa',
                     color: active ? 'white' : NAVY,
                     border: '1.5px solid ' + (active ? NAVY : '#eee'),
                     borderRadius: 12, fontSize: 15, fontWeight: 600, cursor: 'pointer',
@@ -966,7 +1043,7 @@ function ProductPicker({ product, currency, onCancel, onConfirm }) {
                     onClick={() => togglePick(g, item)}
                     style={{
                       flex: '1 0 calc(50% - 3px)', padding: '10px 12px',
-                      background: active ? NAVY : '#f8f5f0',
+                      background: active ? NAVY : '#f3f4fa',
                       color: active ? 'white' : NAVY,
                       border: '1.5px solid ' + (active ? NAVY : '#eee'),
                       borderRadius: 10, fontSize: 14, fontWeight: 600,
@@ -993,7 +1070,7 @@ function ProductPicker({ product, currency, onCancel, onConfirm }) {
               onClick={() => setSafeQuantity(quantity - 1)}
               style={{
                 height: 42, borderRadius: 10, border: '1.5px solid #eee',
-                background: '#f8f5f0', color: NAVY, fontSize: 20, fontWeight: 900,
+                background: '#f3f4fa', color: NAVY, fontSize: 20, fontWeight: 900,
               }}>-</button>
             <input
               type="number"
@@ -1037,10 +1114,12 @@ function ProductPicker({ product, currency, onCancel, onConfirm }) {
             onConfirm(variantName, optionSelections, note.trim(), quantity);
           }}
           style={{
-            width: '100%', padding: 14, marginTop: 16,
-            background: canConfirm ? NAVY : '#ccc', color: 'white',
-            border: 'none', borderRadius: 12, fontSize: 15, fontWeight: 700,
+            width: '100%', padding: 15, marginTop: 16,
+            background: canConfirm ? `linear-gradient(135deg, ${ORANGE}, #f0750f)` : '#ccc',
+            color: 'white',
+            border: 'none', borderRadius: 14, fontSize: 15.5, fontWeight: 800,
             cursor: canConfirm ? 'pointer' : 'not-allowed',
+            boxShadow: canConfirm ? '0 10px 24px rgba(232,93,4,.35)' : 'none',
           }}>
           {canConfirm ? `เพิ่ม ${quantity} รายการ · ${currency}${Number(unitPrice * quantity).toFixed(0)}` : 'เลือกให้ครบทุกกลุ่ม'}
         </button>
@@ -1057,16 +1136,16 @@ function TabBtn({ active, onClick, badge, children }) {
   return (
     <button onClick={onClick} style={{
       flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
-      padding: '11px 0', border: 'none', background: 'transparent',
-      fontSize: 13, fontWeight: 700, color: active ? '#1a1a2e' : '#aaa',
-      borderBottom: `2.5px solid ${active ? '#1a1a2e' : 'transparent'}`,
-      marginBottom: '-1.5px', cursor: 'pointer',
+      padding: '12px 0', border: 'none', background: 'transparent',
+      fontSize: 13.5, fontWeight: 700, color: active ? NAVY : '#9aa0b5',
+      borderBottom: `2.5px solid ${active ? ORANGE : 'transparent'}`,
+      marginBottom: '-1.5px', cursor: 'pointer', transition: 'color .15s ease',
     }}>
       {children}
       {badge != null && (
         <span style={{
-          background: active ? '#1a1a2e' : '#ebebeb', color: active ? 'white' : '#888',
-          borderRadius: 10, padding: '1px 7px', fontSize: 11, fontWeight: 700,
+          background: active ? ORANGE : '#ecedf4', color: active ? 'white' : '#888da6',
+          borderRadius: 999, padding: '1px 8px', fontSize: 11, fontWeight: 700,
         }}>{badge}</span>
       )}
     </button>

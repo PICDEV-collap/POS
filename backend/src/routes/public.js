@@ -185,6 +185,67 @@ router.get('/orders/:id', async (req, res) => {
   res.json(order);
 });
 
+// Batch poll: the customer page tracks its own order ids in localStorage and
+// used to fetch each one individually every 8s (N+1 per phone). This returns
+// all of them in one query, still scoped to the table the QR token unlocks.
+router.get('/table-orders', async (req, res) => {
+  const t = await tableFromToken(req.query.token);
+  if (!t) return res.status(404).json({ error: 'invalid table' });
+  const ids = String(req.query.ids || '')
+    .split(',')
+    .map((s) => Number(s.trim()))
+    .filter((n) => Number.isInteger(n) && n > 0)
+    .slice(0, 50);
+  if (!ids.length) return res.json({ orders: [] });
+  const { rows } = await db.query(
+    `SELECT o.id, o.table_id, o.store_id, o.daily_seq, o.status, o.total_amount,
+            o.note, o.order_type, o.customer_name, o.created_at, o.updated_at,
+            COALESCE((
+              SELECT json_agg(json_build_object(
+                'id', oi.id, 'product_id', oi.product_id, 'product_name', oi.product_name,
+                'unit_price', oi.unit_price, 'quantity', oi.quantity, 'note', oi.note,
+                'option_label', oi.option_label, 'options_selected', oi.options_selected,
+                'variant_name', oi.variant_name, 'fulfillment_type', oi.fulfillment_type,
+                'status', oi.status
+              ) ORDER BY oi.id)
+              FROM order_items oi WHERE oi.order_id = o.id
+            ), '[]'::json) AS items
+       FROM orders o
+      WHERE o.id = ANY($1::int[]) AND o.table_id = $2
+      ORDER BY o.created_at DESC`,
+    [ids, t.id]
+  );
+  res.json({ orders: rows });
+});
+
+// Customer taps "call staff / request bill" at the table. This is a real-time
+// signal only — it never changes order state. Cashier screens (staff web +
+// mobile) listen for `table:call` and also get a best-effort push.
+router.post('/call-staff', async (req, res) => {
+  const t = await tableFromToken(req.body?.token);
+  if (!t) return res.status(404).json({ error: 'invalid table' });
+  const type = req.body?.type === 'service' ? 'service' : 'bill';
+  const payload = {
+    table_id: t.id,
+    table_code: t.code,
+    table_name: t.name,
+    store_id: t.store_id,
+    type,
+    at: new Date().toISOString(),
+  };
+  emit('table:call', payload);
+  push.broadcastToScope('staff', {
+    title: type === 'bill' ? `💰 เรียกเก็บเงิน: ${t.name}` : `🔔 เรียกพนักงาน: ${t.name}`,
+    body: 'ลูกค้ากำลังรออยู่ที่โต๊ะ',
+    tag: `call-${t.id}`,
+    url: '/staff',
+  }).catch(() => {});
+  logger.info('table-call', 'customer called staff', {
+    table_id: t.id, type, store_id: t.store_id,
+  });
+  res.json({ ok: true });
+});
+
 function orderingPayload(state) {
   return {
     allowed: !!state.allowed,
